@@ -85,9 +85,9 @@ endif()
 if(CUDA_FOUND)
     include_directories(SYSTEM third-party/nvfbc)
     list(APPEND PLATFORM_TARGET_FILES
-            src/platform/linux/cuda.cu
-            src/platform/linux/cuda.cpp
-            third-party/nvfbc/NvFBC.h)
+            ${CMAKE_SOURCE_DIR}/src/platform/linux/cuda.cu
+            ${CMAKE_SOURCE_DIR}/src/platform/linux/cuda.cpp
+            ${CMAKE_SOURCE_DIR}/third-party/nvfbc/NvFBC.h)
 
     add_compile_definitions(SUNSHINE_BUILD_CUDA)
 endif()
@@ -104,7 +104,7 @@ if(LIBDRM_FOUND AND LIBCAP_FOUND)
     add_compile_definitions(SUNSHINE_BUILD_DRM)
     include_directories(SYSTEM ${LIBDRM_INCLUDE_DIRS} ${LIBCAP_INCLUDE_DIRS})
     list(APPEND PLATFORM_LIBRARIES ${LIBDRM_LIBRARIES} ${LIBCAP_LIBRARIES})
-    list(APPEND PLATFORM_TARGET_FILES src/platform/linux/kmsgrab.cpp)
+    list(APPEND PLATFORM_TARGET_FILES ${CMAKE_SOURCE_DIR}/src/platform/linux/kmsgrab.cpp)
     list(APPEND SUNSHINE_DEFINITIONS EGL_NO_X11=1)
 elseif(NOT LIBDRM_FOUND)
     message(WARNING "Missing libdrm")
@@ -132,8 +132,8 @@ if(WAYLAND_FOUND)
 
     list(APPEND PLATFORM_LIBRARIES ${WAYLAND_LIBRARIES})
     list(APPEND PLATFORM_TARGET_FILES
-            src/platform/linux/wlgrab.cpp
-            src/platform/linux/wayland.cpp)
+            ${CMAKE_SOURCE_DIR}/src/platform/linux/wlgrab.cpp
+            ${CMAKE_SOURCE_DIR}/src/platform/linux/wayland.cpp)
 endif()
 
 # x11
@@ -146,7 +146,7 @@ if(X11_FOUND)
     add_compile_definitions(SUNSHINE_BUILD_X11)
     include_directories(SYSTEM ${X11_INCLUDE_DIR})
     list(APPEND PLATFORM_LIBRARIES ${X11_LIBRARIES})
-    list(APPEND PLATFORM_TARGET_FILES src/platform/linux/x11grab.cpp)
+    list(APPEND PLATFORM_TARGET_FILES ${CMAKE_SOURCE_DIR}/src/platform/linux/x11grab.cpp)
 endif()
 
 if(NOT ${CUDA_FOUND} AND NOT ${WAYLAND_FOUND} AND NOT ${X11_FOUND} AND NOT (${LIBDRM_FOUND} AND ${LIBCAP_FOUND}))
@@ -171,24 +171,24 @@ else()
 endif()
 
 list(APPEND PLATFORM_TARGET_FILES
-        src/platform/linux/publish.cpp
-        src/platform/linux/vaapi.h
-        src/platform/linux/vaapi.cpp
-        src/platform/linux/cuda.h
-        src/platform/linux/graphics.h
-        src/platform/linux/graphics.cpp
-        src/platform/linux/misc.h
-        src/platform/linux/misc.cpp
-        src/platform/linux/audio.cpp
-        src/platform/linux/input.cpp
-        src/platform/linux/x11grab.h
-        src/platform/linux/wayland.h
-        third-party/glad/src/egl.c
-        third-party/glad/src/gl.c
-        third-party/glad/include/EGL/eglplatform.h
-        third-party/glad/include/KHR/khrplatform.h
-        third-party/glad/include/glad/gl.h
-        third-party/glad/include/glad/egl.h)
+        ${CMAKE_SOURCE_DIR}/src/platform/linux/publish.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/linux/vaapi.h
+        ${CMAKE_SOURCE_DIR}/src/platform/linux/vaapi.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/linux/cuda.h
+        ${CMAKE_SOURCE_DIR}/src/platform/linux/graphics.h
+        ${CMAKE_SOURCE_DIR}/src/platform/linux/graphics.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/linux/misc.h
+        ${CMAKE_SOURCE_DIR}/src/platform/linux/misc.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/linux/audio.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/linux/input.cpp
+        ${CMAKE_SOURCE_DIR}/src/platform/linux/x11grab.h
+        ${CMAKE_SOURCE_DIR}/src/platform/linux/wayland.h
+        ${CMAKE_SOURCE_DIR}/third-party/glad/src/egl.c
+        ${CMAKE_SOURCE_DIR}/third-party/glad/src/gl.c
+        ${CMAKE_SOURCE_DIR}/third-party/glad/include/EGL/eglplatform.h
+        ${CMAKE_SOURCE_DIR}/third-party/glad/include/KHR/khrplatform.h
+        ${CMAKE_SOURCE_DIR}/third-party/glad/include/glad/gl.h
+        ${CMAKE_SOURCE_DIR}/third-party/glad/include/glad/egl.h)
 
 list(APPEND PLATFORM_LIBRARIES
         Boost::dynamic_linking

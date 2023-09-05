@@ -58,3 +58,7 @@
 	path = third-party/ffmpeg-linux-powerpc64le
 	url = https://github.com/LizardByte/build-deps
 	branch = ffmpeg-linux-powerpc64le
+[submodule "third-party/googletest"]
+	path = third-party/googletest
+	url = https://github.com/google/googletest/
+	branch = main
