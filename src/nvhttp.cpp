@@ -112,9 +112,15 @@ namespace nvhttp {
     std::string pkey;
   } conf_intern;
 
+  struct named_cert_t {
+    std::string name;
+    std::string cert;
+  };
+
   struct client_t {
     std::string uniqueID;
     std::vector<std::string> certs;
+    std::vector<named_cert_t> named_certs;
   };
 
   struct pair_session_t {
@@ -195,7 +201,15 @@ namespace nvhttp {
         cert_node.put_value(cert);
         cert_nodes.push_back(std::make_pair(""s, cert_node));
       }
-      node.add_child("certs"s, cert_nodes);
+
+      pt::ptree named_cert_nodes;
+      for (auto &named_cert : client.named_certs) {
+        pt::ptree named_cert_node;
+        named_cert_node.put("name"s, named_cert.name);
+        named_cert_node.put("cert"s, named_cert.cert);
+        named_cert_nodes.push_back(std::make_pair(""s, named_cert_node));
+      }
+      node.add_child("named_certs"s, named_cert_nodes);
 
       nodes.push_back(std::make_pair(""s, node));
     }
@@ -243,8 +257,21 @@ namespace nvhttp {
 
       client.uniqueID = uniqID;
 
+      // Import from old format
       for (auto &[_, el] : device_node.get_child("certs")) {
-        client.certs.emplace_back(el.get_value<std::string>());
+        named_cert_t named_cert;
+        named_cert.name = ""s;
+        named_cert.cert = el.get_value<std::string>();
+        client.named_certs.emplace_back(named_cert);
+        client.certs.emplace_back(named_cert.cert);
+      }
+
+      for (auto &[_, el] : device_node.get_child("named_certs")) {
+        named_cert_t named_cert;
+        named_cert.name = el.get_child("name").get_value<std::string>();
+        named_cert.cert = el.get_child("cert").get_value<std::string>();
+        client.named_certs.emplace_back(named_cert);
+        client.certs.emplace_back(named_cert.cert);
       }
     }
   }
@@ -560,15 +587,16 @@ namespace nvhttp {
   /**
    * @brief Compare the user supplied pin to the Moonlight pin.
    * @param pin The user supplied pin.
+   * @param name The user supplied name.
    * @return `true` if the pin is correct, `false` otherwise.
    *
    * EXAMPLES:
    * ```cpp
-   * bool pin_status = nvhttp::pin("1234");
+   * bool pin_status = nvhttp::pin("1234", "laptop");
    * ```
    */
   bool
-  pin(std::string pin) {
+  pin(std::string pin, std::string name) {
     pt::ptree tree;
     if (map_id_sess.empty()) {
       return false;
@@ -593,6 +621,13 @@ namespace nvhttp {
 
     auto &sess = std::begin(map_id_sess)->second;
     getservercert(sess, tree, pin);
+
+    // set up named cert
+    auto &client = map_id_client[sess.client.uniqueID];
+    named_cert_t named_cert;
+    named_cert.name = name;
+    named_cert.cert = sess.client.cert;
+    client.named_certs.emplace_back(named_cert);
 
     // response to the request for pin
     std::ostringstream data;
@@ -969,6 +1004,9 @@ namespace nvhttp {
     for (auto &[_, client] : map_id_client) {
       for (auto &cert : client.certs) {
         cert_chain.add(crypto::x509(cert));
+      }
+      for (auto &named_cert : client.named_certs) {
+        cert_chain.add(crypto::x509(named_cert.cert));
       }
     }
 
