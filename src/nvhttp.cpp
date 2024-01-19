@@ -251,20 +251,24 @@ namespace nvhttp {
       client.uniqueID = uniqID;
 
       // Import from old format
-      for (auto &[_, el] : device_node.get_child("certs")) {
-        named_cert_t named_cert;
-        named_cert.name = ""s;
-        named_cert.cert = el.get_value<std::string>();
-        client.named_certs.emplace_back(named_cert);
-        client.certs.emplace_back(named_cert.cert);
+      if(device_node.count("certs")) {
+        for (auto &[_, el] : device_node.get_child("certs")) {
+          named_cert_t named_cert;
+          named_cert.name = ""s;
+          named_cert.cert = el.get_value<std::string>();
+          client.named_certs.emplace_back(named_cert);
+          client.certs.emplace_back(named_cert.cert);
+        }
       }
 
-      for (auto &[_, el] : device_node.get_child("named_certs")) {
-        named_cert_t named_cert;
-        named_cert.name = el.get_child("name").get_value<std::string>();
-        named_cert.cert = el.get_child("cert").get_value<std::string>();
-        client.named_certs.emplace_back(named_cert);
-        client.certs.emplace_back(named_cert.cert);
+      if(device_node.count("named_certs")) {
+        for (auto &[_, el] : device_node.get_child("named_certs")) {
+          named_cert_t named_cert;
+          named_cert.name = el.get_child("name").get_value<std::string>();
+          named_cert.cert = el.get_child("cert").get_value<std::string>();
+          client.named_certs.emplace_back(named_cert);
+          client.certs.emplace_back(named_cert.cert);
+        }
       }
     }
   }
