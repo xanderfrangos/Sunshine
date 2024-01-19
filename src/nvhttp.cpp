@@ -114,6 +114,7 @@ namespace nvhttp {
 
   struct named_cert_t {
     std::string name;
+    std::string uniqueID;
     std::string cert;
   };
 
@@ -200,6 +201,7 @@ namespace nvhttp {
         pt::ptree named_cert_node;
         named_cert_node.put("name"s, named_cert.name);
         named_cert_node.put("cert"s, named_cert.cert);
+        named_cert_node.put("uniqueID"s, named_cert.uniqueID);
         named_cert_nodes.push_back(std::make_pair(""s, named_cert_node));
       }
       node.add_child("named_certs"s, named_cert_nodes);
@@ -256,6 +258,7 @@ namespace nvhttp {
           named_cert_t named_cert;
           named_cert.name = ""s;
           named_cert.cert = el.get_value<std::string>();
+          named_cert.uniqueID = uuid_util::uuid_t::generate().string();
           client.named_certs.emplace_back(named_cert);
           client.certs.emplace_back(named_cert.cert);
         }
@@ -266,6 +269,7 @@ namespace nvhttp {
           named_cert_t named_cert;
           named_cert.name = el.get_child("name").get_value<std::string>();
           named_cert.cert = el.get_child("cert").get_value<std::string>();
+          named_cert.uniqueID = el.get_child("uniqueID").get_value<std::string>();
           client.named_certs.emplace_back(named_cert);
           client.certs.emplace_back(named_cert.cert);
         }
@@ -624,6 +628,7 @@ namespace nvhttp {
     named_cert_t named_cert;
     named_cert.name = name;
     named_cert.cert = sess.client.cert;
+    named_cert.uniqueID = uuid_util::uuid_t::generate().string();
     client.named_certs.emplace_back(named_cert);
 
     // response to the request for pin
