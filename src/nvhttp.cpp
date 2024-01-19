@@ -195,13 +195,6 @@ namespace nvhttp {
 
       node.put("uniqueid"s, client.uniqueID);
 
-      pt::ptree cert_nodes;
-      for (auto &cert : client.certs) {
-        pt::ptree cert_node;
-        cert_node.put_value(cert);
-        cert_nodes.push_back(std::make_pair(""s, cert_node));
-      }
-
       pt::ptree named_cert_nodes;
       for (auto &named_cert : client.named_certs) {
         pt::ptree named_cert_node;
