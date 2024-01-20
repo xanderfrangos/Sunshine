@@ -1155,7 +1155,7 @@ namespace nvhttp {
   }
 
   /**
-   * @brief Remove all single client.
+   * @brief Remove single client.
    *
    * EXAMPLES:
    * ```cpp
