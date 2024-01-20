@@ -201,7 +201,7 @@ namespace nvhttp {
         pt::ptree named_cert_node;
         named_cert_node.put("name"s, named_cert.name);
         named_cert_node.put("cert"s, named_cert.cert);
-        named_cert_node.put("uniqueID"s, named_cert.uniqueID);
+        named_cert_node.put("uniqueid"s, named_cert.uniqueID);
         named_cert_nodes.push_back(std::make_pair(""s, named_cert_node));
       }
       node.add_child("named_certs"s, named_cert_nodes);
@@ -269,7 +269,7 @@ namespace nvhttp {
           named_cert_t named_cert;
           named_cert.name = el.get_child("name").get_value<std::string>();
           named_cert.cert = el.get_child("cert").get_value<std::string>();
-          named_cert.uniqueID = el.get_child("uniqueID").get_value<std::string>();
+          named_cert.uniqueID = el.get_child("uniqueid").get_value<std::string>();
           client.named_certs.emplace_back(named_cert);
           client.certs.emplace_back(named_cert.cert);
         }
