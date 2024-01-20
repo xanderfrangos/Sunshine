@@ -253,7 +253,7 @@ namespace nvhttp {
       client.uniqueID = uniqID;
 
       // Import from old format
-      if(device_node.count("certs")) {
+      if (device_node.count("certs")) {
         for (auto &[_, el] : device_node.get_child("certs")) {
           named_cert_t named_cert;
           named_cert.name = ""s;
@@ -264,7 +264,7 @@ namespace nvhttp {
         }
       }
 
-      if(device_node.count("named_certs")) {
+      if (device_node.count("named_certs")) {
         for (auto &[_, el] : device_node.get_child("named_certs")) {
           named_cert_t named_cert;
           named_cert.name = el.get_child("name").get_value<std::string>();
@@ -763,7 +763,7 @@ namespace nvhttp {
         named_cert_nodes.push_back(std::make_pair(""s, named_cert_node));
       }
     }
-    
+
     return named_cert_nodes;
   }
 
