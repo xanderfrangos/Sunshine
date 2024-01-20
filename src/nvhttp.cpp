@@ -1162,18 +1162,33 @@ namespace nvhttp {
    * nvhttp::unpair_client("4D7BB2DD-5704-A405-B41C-891A022932E1");
    * ```
    */
-  bool
+  int
   unpair_client(std::string uniqueID) {
+    int removed = 0;
     for (auto &[_, client] : map_id_client) {
-      for (auto it = client.named_certs.begin(); it != client.named_certs.end();)
-      {
-        if ((*it).uniqueID == uniqueID)
+      for (auto it = client.named_certs.begin(); it != client.named_certs.end();) {
+        if ((*it).uniqueID == uniqueID) {
+          // Find matching cert and remove it
+          for (auto cert = client.certs.begin(); cert != client.certs.end();) {
+            if ((*cert) == (*it).cert) {
+              cert = client.certs.erase(cert);
+              removed++;
+            }
+            else {
+              ++cert;
+            }
+          }
+
+          // And then remove the named cert
           it = client.named_certs.erase(it);
-        else
+          removed++;
+        }
+        else {
           ++it;
-      }  
+        }
+      }
     }
     save_state();
-    return true;
+    return removed;
   }
 }  // namespace nvhttp
