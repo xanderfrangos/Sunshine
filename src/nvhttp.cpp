@@ -752,6 +752,21 @@ namespace nvhttp {
     response->close_connection_after_response = true;
   }
 
+  pt::ptree
+  get_all_clients() {
+    pt::ptree named_cert_nodes;
+    for (auto &[_, client] : map_id_client) {
+      for (auto &named_cert : client.named_certs) {
+        pt::ptree named_cert_node;
+        named_cert_node.put("name"s, named_cert.name);
+        named_cert_node.put("uniqueID"s, named_cert.uniqueID);
+        named_cert_nodes.push_back(std::make_pair(""s, named_cert_node));
+      }
+    }
+    
+    return named_cert_nodes;
+  }
+
   void
   applist(resp_https_t response, req_https_t request) {
     print_req<SimpleWeb::HTTPS>(request);
