@@ -47,6 +47,8 @@ namespace nvhttp {
   start();
   bool
   pin(std::string pin, std::string name);
+  bool
+  unpair_client(std::string uniqueid);
   boost::property_tree::ptree
   get_all_clients();
   void

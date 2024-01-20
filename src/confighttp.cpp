@@ -702,6 +702,37 @@ namespace confighttp {
   }
 
   void
+  unpairClient(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) return;
+
+    print_req(request);
+
+    std::stringstream ss;
+    ss << request->content.rdbuf();
+
+    pt::ptree inputTree, outputTree;
+
+    auto g = util::fail_guard([&]() {
+      std::ostringstream data;
+      pt::write_json(data, outputTree);
+      response->write(data.str());
+    });
+
+    try {
+      // TODO: Input Validation
+      pt::read_json(ss, inputTree);
+      std::string uniqueid = inputTree.get<std::string>("uniqueid");
+      outputTree.put("status", nvhttp::unpair_client(uniqueid));
+    }
+    catch (std::exception &e) {
+      BOOST_LOG(warning) << "UnpairClient: "sv << e.what();
+      outputTree.put("status", false);
+      outputTree.put("error", e.what());
+      return;
+    }
+  }
+
+  void
   listClients(resp_https_t response, req_https_t request) {
     if (!authenticate(response, request)) return;
 
@@ -769,6 +800,7 @@ namespace confighttp {
     server.resource["^/api/apps/([0-9]+)$"]["DELETE"] = deleteApp;
     server.resource["^/api/clients/unpair$"]["POST"] = unpairAll;
     server.resource["^/api/clients/list$"]["GET"] = listClients;
+    server.resource["^/api/clients/unpair-single$"]["POST"] = unpairClient;
     server.resource["^/api/apps/close$"]["POST"] = closeApp;
     server.resource["^/api/covers/upload$"]["POST"] = uploadCover;
     server.resource["^/images/sunshine.ico$"]["GET"] = getFaviconImage;

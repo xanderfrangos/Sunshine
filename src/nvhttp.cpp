@@ -1153,4 +1153,27 @@ namespace nvhttp {
     map_id_client.clear();
     save_state();
   }
+
+  /**
+   * @brief Remove all single client.
+   *
+   * EXAMPLES:
+   * ```cpp
+   * nvhttp::unpair_client("4D7BB2DD-5704-A405-B41C-891A022932E1");
+   * ```
+   */
+  bool
+  unpair_client(std::string uniqueID) {
+    for (auto &[_, client] : map_id_client) {
+      for (auto it = client.named_certs.begin(); it != client.named_certs.end();)
+      {
+        if ((*it).uniqueID == uniqueID)
+          it = client.named_certs.erase(it);
+        else
+          ++it;
+      }  
+    }
+    save_state();
+    return true;
+  }
 }  // namespace nvhttp
