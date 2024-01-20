@@ -121,6 +121,17 @@ namespace stream {
     NV_VIDEO_PACKET packet;
   };
 
+  struct video_packet_enc_prefix_t {
+    video_packet_raw_t *
+    payload() {
+      return (video_packet_raw_t *) (this + 1);
+    }
+
+    std::uint8_t iv[12];  // 12-byte IV is ideal for AES-GCM
+    std::uint32_t unused;
+    std::uint8_t tag[16];
+  };
+
   struct audio_packet_raw_t {
     uint8_t *
     payload() {
@@ -235,14 +246,14 @@ namespace stream {
   // return bytes written on success
   // return -1 on error
   static inline int
-  encode_audio(int featureSet, const audio::buffer_t &plaintext, audio_packet_t &destination, std::uint32_t avRiKeyIv, crypto::cipher::cbc_t &cbc) {
+  encode_audio(bool encrypted, const audio::buffer_t &plaintext, audio_packet_t &destination, std::uint32_t avRiKeyIv, crypto::cipher::cbc_t &cbc) {
     // If encryption isn't enabled
-    if (!(featureSet & 0x20)) {
+    if (!encrypted) {
       std::copy(std::begin(plaintext), std::end(plaintext), destination->payload());
       return plaintext.size();
     }
 
-    crypto::aes_t iv {};
+    crypto::aes_t iv(16);
     *(std::uint32_t *) iv.data() = util::endian::big<std::uint32_t>(avRiKeyIv + destination->rtp.sequenceNumber);
 
     return cbc.encrypt(std::string_view { (char *) std::begin(plaintext), plaintext.size() }, destination->payload(), &iv);
@@ -278,8 +289,15 @@ namespace stream {
     void
     iterate(std::chrono::milliseconds timeout);
 
+    /**
+     * @brief Calls the handler for a given control stream message.
+     * @param type The message type.
+     * @param session The session the message was received on.
+     * @param payload The payload of the message.
+     * @param reinjected `true` if this message is being reprocessed after decryption.
+     */
     void
-    call(std::uint16_t type, session_t *session, const std::string_view &payload);
+    call(std::uint16_t type, session_t *session, const std::string_view &payload, bool reinjected);
 
     void
     map(uint16_t type, std::function<void(session_t *, const std::string_view &)> cb) {
@@ -354,6 +372,9 @@ namespace stream {
       int lowseq;
       udp::endpoint peer;
 
+      std::optional<crypto::cipher::gcm_t> cipher;
+      std::uint64_t gcm_iv_counter;
+
       safe::mail_raw_t::event_t<bool> idr_events;
       safe::mail_raw_t::event_t<std::pair<int64_t, int64_t>> invalidate_ref_frames_events;
 
@@ -379,13 +400,13 @@ namespace stream {
 
     struct {
       crypto::cipher::gcm_t cipher;
-      crypto::aes_t iv;
+      crypto::aes_t legacy_input_enc_iv;  // Only used when the client doesn't support full control stream encryption
 
-      uint32_t connect_data;  // Used for new clients with ML_FF_SESSION_ID_V1
+      std::uint32_t connect_data;  // Used for new clients with ML_FF_SESSION_ID_V1
       std::string expected_peer_address;  // Only used for legacy clients without ML_FF_SESSION_ID_V1
 
       net::peer_t peer;
-      std::uint8_t seq;
+      std::uint32_t seq;
 
       platf::feedback_queue_t feedback_queue;
       safe::mail_raw_t::event_t<video::hdr_info_t> hdr_queue;
@@ -414,9 +435,29 @@ namespace stream {
       return plaintext;
     }
 
-    crypto::aes_t iv {};
     auto seq = session->control.seq++;
-    iv[0] = seq;
+
+    crypto::aes_t iv;
+    if (session->config.encryptionFlagsEnabled & SS_ENC_CONTROL_V2) {
+      // We use the deterministic IV construction algorithm specified in NIST SP 800-38D
+      // Section 8.2.1. The sequence number is our "invocation" field and the 'CH' in the
+      // high bytes is the "fixed" field. Because each client provides their own unique
+      // key, our values in the fixed field need only uniquely identify each independent
+      // use of the client's key with AES-GCM in our code.
+      //
+      // The sequence number is 32 bits long which allows for 2^32 control stream messages
+      // to be sent to each client before the IV repeats.
+      iv.resize(12);
+      std::copy_n((uint8_t *) &seq, sizeof(seq), std::begin(iv));
+      iv[10] = 'H';  // Host originated
+      iv[11] = 'C';  // Control stream
+    }
+    else {
+      // Nvidia's old style encryption uses a 16-byte IV
+      iv.resize(16);
+
+      iv[0] = (std::uint8_t) seq;
+    }
 
     auto packet = (control_encrypted_p) tagged_cipher.data();
 
@@ -503,8 +544,21 @@ namespace stream {
     return nullptr;
   }
 
+  /**
+   * @brief Calls the handler for a given control stream message.
+   * @param type The message type.
+   * @param session The session the message was received on.
+   * @param payload The payload of the message.
+   * @param reinjected `true` if this message is being reprocessed after decryption.
+   */
   void
-  control_server_t::call(std::uint16_t type, session_t *session, const std::string_view &payload) {
+  control_server_t::call(std::uint16_t type, session_t *session, const std::string_view &payload, bool reinjected) {
+    // If we are using the encrypted control stream protocol, drop any messages that come off the wire unencrypted
+    if (session->config.controlProtocolType == 13 && !reinjected && type != packetTypes[IDX_ENCRYPTED]) {
+      BOOST_LOG(error) << "Dropping unencrypted message on encrypted control stream: "sv << util::hex(type).to_string_view();
+      return;
+    }
+
     auto cb = _map_type_cb.find(type);
     if (cb == std::end(_map_type_cb)) {
       BOOST_LOG(debug)
@@ -541,7 +595,7 @@ namespace stream {
           auto type = *(std::uint16_t *) packet->data;
           std::string_view payload { (char *) packet->data + sizeof(type), packet->dataLength - sizeof(type) };
 
-          call(type, session, payload);
+          call(type, session, payload, false);
         } break;
         case ENET_EVENT_TYPE_CONNECT:
           BOOST_LOG(info) << "CLIENT CONNECTED"sv;
@@ -568,16 +622,17 @@ namespace stream {
       size_t percentage;
 
       size_t blocksize;
+      size_t prefixsize;
       util::buffer_t<char> shards;
 
       char *
       data(size_t el) {
-        return &shards[el * blocksize];
+        return &shards[(el + 1) * prefixsize + el * blocksize];
       }
 
-      std::string_view
-      operator[](size_t el) const {
-        return { &shards[el * blocksize], blocksize };
+      char *
+      prefix(size_t el) {
+        return &shards[el * (prefixsize + blocksize)];
       }
 
       size_t
@@ -587,7 +642,7 @@ namespace stream {
     };
 
     static fec_t
-    encode(const std::string_view &payload, size_t blocksize, size_t fecpercentage, size_t minparityshards) {
+    encode(const std::string_view &payload, size_t blocksize, size_t fecpercentage, size_t minparityshards, size_t prefixsize) {
       auto payload_size = payload.size();
 
       auto pad = payload_size % blocksize != 0;
@@ -614,15 +669,21 @@ namespace stream {
         fecpercentage = 0;
       }
 
-      util::buffer_t<char> shards { nr_shards * blocksize };
+      util::buffer_t<char> shards { nr_shards * (blocksize + prefixsize) };
       util::buffer_t<uint8_t *> shards_p { nr_shards };
 
-      // copy payload + padding
-      auto next = std::copy(std::begin(payload), std::end(payload), std::begin(shards));
-      std::fill(next, std::end(shards), 0);  // padding with zero
-
+      auto next = std::begin(payload);
       for (auto x = 0; x < nr_shards; ++x) {
-        shards_p[x] = (uint8_t *) &shards[x * blocksize];
+        shards_p[x] = (uint8_t *) &shards[(x + 1) * prefixsize + x * blocksize];
+
+        auto copy_len = std::min<size_t>(blocksize, std::end(payload) - next);
+        std::copy_n(next, copy_len, shards_p[x]);
+        if (copy_len < blocksize) {
+          // Zero any additional space after the end of the payload
+          std::fill_n(shards_p[x] + copy_len, blocksize - copy_len, 0);
+        }
+
+        next += copy_len;
       }
 
       if (data_shards + parity_shards <= DATA_SHARDS_MAX) {
@@ -637,6 +698,7 @@ namespace stream {
         nr_shards,
         fecpercentage,
         blocksize,
+        prefixsize,
         std::move(shards)
       };
     }
@@ -881,7 +943,7 @@ namespace stream {
       std::vector<uint8_t> plaintext;
 
       auto &cipher = session->control.cipher;
-      auto &iv = session->control.iv;
+      auto &iv = session->control.legacy_input_enc_iv;
       if (cipher.decrypt(tagged_cipher, plaintext, &iv)) {
         // something went wrong :(
 
@@ -891,7 +953,7 @@ namespace stream {
         return;
       }
 
-      if (tagged_cipher_length >= 16 + sizeof(crypto::aes_t)) {
+      if (tagged_cipher_length >= 16 + iv.size()) {
         std::copy(payload.end() - 16, payload.end(), std::begin(iv));
       }
 
@@ -915,11 +977,27 @@ namespace stream {
       std::string_view tagged_cipher { (char *) header->payload(), (size_t) tagged_cipher_length };
 
       auto &cipher = session->control.cipher;
-      crypto::aes_t iv {};
-      iv[0] = (std::uint8_t) seq;
+      crypto::aes_t iv;
+      if (session->config.encryptionFlagsEnabled & SS_ENC_CONTROL_V2) {
+        // We use the deterministic IV construction algorithm specified in NIST SP 800-38D
+        // Section 8.2.1. The sequence number is our "invocation" field and the 'CC' in the
+        // high bytes is the "fixed" field. Because each client provides their own unique
+        // key, our values in the fixed field need only uniquely identify each independent
+        // use of the client's key with AES-GCM in our code.
+        //
+        // The sequence number is 32 bits long which allows for 2^32 control stream messages
+        // to be received from each client before the IV repeats.
+        iv.resize(12);
+        std::copy_n((uint8_t *) &seq, sizeof(seq), std::begin(iv));
+        iv[10] = 'C';  // Client originated
+        iv[11] = 'C';  // Control stream
+      }
+      else {
+        // Nvidia's old style encryption uses a 16-byte IV
+        iv.resize(16);
 
-      // update control sequence
-      ++session->control.seq;
+        iv[0] = (std::uint8_t) seq;
+      }
 
       std::vector<uint8_t> plaintext;
       if (cipher.decrypt(tagged_cipher, plaintext, &iv)) {
@@ -946,7 +1024,7 @@ namespace stream {
         input::passthrough(session->input, std::move(plaintext));
       }
       else {
-        server->call(type, session, next_payload);
+        server->call(type, session, next_payload, true);
       }
     });
 
@@ -1301,7 +1379,9 @@ namespace stream {
             }
           }
 
-          auto shards = fec::encode(current_payload, blocksize, fecPercentage, session->config.minRequiredFecPackets);
+          // If video encryption is enabled, we allocate space for the encryption header before each shard
+          auto shards = fec::encode(current_payload, blocksize, fecPercentage, session->config.minRequiredFecPackets,
+            session->video.cipher ? sizeof(video_packet_enc_prefix_t) : 0);
 
           // set FEC info now that we know for sure what our percentage will be for this frame
           for (auto x = 0; x < shards.size(); ++x) {
@@ -1322,12 +1402,34 @@ namespace stream {
 
             inspect->packet.multiFecBlocks = (blockIndex << 4) | lastBlockIndex;
             inspect->packet.frameIndex = packet->frame_index();
+
+            // Encrypt this shard if video encryption is enabled
+            if (session->video.cipher) {
+              // We use the deterministic IV construction algorithm specified in NIST SP 800-38D
+              // Section 8.2.1. The sequence number is our "invocation" field and the 'V' in the
+              // high bytes is the "fixed" field. Because each client provides their own unique
+              // key, our values in the fixed field need only uniquely identify each independent
+              // use of the client's key with AES-GCM in our code.
+              //
+              // The IV counter is 64 bits long which allows for 2^64 encrypted video packets
+              // to be sent to each client before the IV repeats.
+              crypto::aes_t iv(12);
+              std::copy_n((uint8_t *) &session->video.gcm_iv_counter, sizeof(session->video.gcm_iv_counter), std::begin(iv));
+              iv[11] = 'V';  // Video stream
+              session->video.gcm_iv_counter++;
+
+              // Encrypt the target buffer in place
+              auto *prefix = (video_packet_enc_prefix_t *) shards.prefix(x);
+              prefix->unused = 0;
+              std::copy(std::begin(iv), std::end(iv), prefix->iv);
+              session->video.cipher->encrypt(std::string_view { (char *) inspect, (size_t) blocksize }, prefix->tag, &iv);
+            }
           }
 
           auto peer_address = session->video.peer.address();
           auto batch_info = platf::batched_send_info_t {
             shards.shards.begin(),
-            shards.blocksize,
+            shards.prefixsize + shards.blocksize,
             shards.nr_shards,
             (uintptr_t) sock.native_handle(),
             peer_address,
@@ -1341,8 +1443,8 @@ namespace stream {
             BOOST_LOG(verbose) << "Falling back to unbatched send"sv;
             for (auto x = 0; x < shards.size(); ++x) {
               auto send_info = platf::send_info_t {
-                shards[x].data(),
-                shards[x].size(),
+                shards.prefix(x),
+                shards.prefixsize + shards.blocksize,
                 (uintptr_t) sock.native_handle(),
                 peer_address,
                 session->video.peer.port(),
@@ -1415,7 +1517,7 @@ namespace stream {
       // For now, encode_audio needs it to be the proper sequenceNumber
       audio_packet->rtp.sequenceNumber = sequenceNumber;
 
-      auto bytes = encode_audio(session->config.nvFeatureFlags, packet_data, audio_packet, session->audio.avRiKeyId, session->audio.cipher);
+      auto bytes = encode_audio(session->config.encryptionFlagsEnabled & SS_ENC_AUDIO, packet_data, audio_packet, session->audio.avRiKeyId, session->audio.cipher);
       if (bytes < 0) {
         BOOST_LOG(error) << "Couldn't encode audio packet"sv;
         break;
@@ -1779,7 +1881,7 @@ namespace stream {
     }
 
     std::shared_ptr<session_t>
-    alloc(config_t &config, crypto::aes_t &gcm_key, crypto::aes_t &iv, std::string_view av_ping_payload, uint32_t control_connect_data) {
+    alloc(config_t &config, rtsp_stream::launch_session_t &launch_session) {
       auto session = std::make_shared<session_t>();
 
       auto mail = std::make_shared<safe::mail_raw_t>();
@@ -1788,18 +1890,25 @@ namespace stream {
 
       session->config = config;
 
-      session->control.connect_data = control_connect_data;
+      session->control.connect_data = launch_session.control_connect_data;
       session->control.feedback_queue = mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback);
       session->control.hdr_queue = mail->event<video::hdr_info_t>(mail::hdr);
-      session->control.iv = iv;
+      session->control.legacy_input_enc_iv = launch_session.iv;
       session->control.cipher = crypto::cipher::gcm_t {
-        gcm_key, false
+        launch_session.gcm_key, false
       };
 
       session->video.idr_events = mail->event<bool>(mail::idr);
       session->video.invalidate_ref_frames_events = mail->event<std::pair<int64_t, int64_t>>(mail::invalidate_ref_frames);
       session->video.lowseq = 0;
-      session->video.ping_payload = av_ping_payload;
+      session->video.ping_payload = launch_session.av_ping_payload;
+      if (config.encryptionFlagsEnabled & SS_ENC_VIDEO) {
+        BOOST_LOG(info) << "Video encryption enabled"sv;
+        session->video.cipher = crypto::cipher::gcm_t {
+          launch_session.gcm_key, false
+        };
+        session->video.gcm_iv_counter = 0;
+      }
 
       constexpr auto max_block_size = crypto::cipher::round_to_pkcs7_padded(2048);
 
@@ -1826,11 +1935,11 @@ namespace stream {
       session->audio.fec_packet->fecHeader.ssrc = 0;
 
       session->audio.cipher = crypto::cipher::cbc_t {
-        gcm_key, true
+        launch_session.gcm_key, true
       };
 
-      session->audio.ping_payload = av_ping_payload;
-      session->audio.avRiKeyId = util::endian::big(*(std::uint32_t *) iv.data());
+      session->audio.ping_payload = launch_session.av_ping_payload;
+      session->audio.avRiKeyId = util::endian::big(*(std::uint32_t *) launch_session.iv.data());
       session->audio.sequenceNumber = 0;
       session->audio.timestamp = 0;
 

@@ -5,6 +5,7 @@
 #define BOOST_BIND_GLOBAL_PLACEHOLDERS
 
 extern "C" {
+#include <moonlight-common-c/src/Limelight-internal.h>
 #include <moonlight-common-c/src/Rtsp.h>
 }
 
@@ -517,14 +518,42 @@ namespace rtsp_stream {
     std::stringstream ss;
 
     // Tell the client about our supported features
-    ss << "a=x-ss-general.featureFlags: " << (uint32_t) platf::get_capabilities() << std::endl;
+    ss << "a=x-ss-general.featureFlags:" << (uint32_t) platf::get_capabilities() << std::endl;
+
+    // Always request new control stream encryption if the client supports it
+    uint32_t encryption_flags_supported = SS_ENC_CONTROL_V2 | SS_ENC_AUDIO;
+    uint32_t encryption_flags_requested = SS_ENC_CONTROL_V2;
+
+    // Determine the encryption desired for this remote endpoint
+    auto nettype = net::from_address(sock.remote_endpoint().address().to_string());
+    int encryption_mode;
+    if (nettype == net::net_e::PC || nettype == net::net_e::LAN) {
+      encryption_mode = config::stream.lan_encryption_mode;
+    }
+    else {
+      encryption_mode = config::stream.wan_encryption_mode;
+    }
+    if (encryption_mode != config::ENCRYPTION_MODE_NEVER) {
+      // Advertise support for video encryption if it's not disabled
+      encryption_flags_supported |= SS_ENC_VIDEO;
+
+      // If it's mandatory, also request it to enable use if the client
+      // didn't explicitly opt in, but it otherwise has support.
+      if (encryption_mode == config::ENCRYPTION_MODE_MANDATORY) {
+        encryption_flags_requested |= SS_ENC_VIDEO | SS_ENC_AUDIO;
+      }
+    }
+
+    // Report supported and required encryption flags
+    ss << "a=x-ss-general.encryptionSupported:" << encryption_flags_supported << std::endl;
+    ss << "a=x-ss-general.encryptionRequested:" << encryption_flags_requested << std::endl;
+
+    if (video::last_encoder_probe_supported_ref_frames_invalidation) {
+      ss << "a=x-nv-video[0].refPicInvalidation:1"sv << std::endl;
+    }
 
     if (video::active_hevc_mode != 1) {
       ss << "sprop-parameter-sets=AAAAAU"sv << std::endl;
-    }
-
-    if (video::last_encoder_probe_supported_ref_frames_invalidation) {
-      ss << "x-nv-video[0].refPicInvalidation=1"sv << std::endl;
     }
 
     if (video::active_av1_mode != 1) {
@@ -705,6 +734,7 @@ namespace rtsp_stream {
     args.try_emplace("x-nv-vqos[0].qosTrafficType"sv, "5"sv);
     args.try_emplace("x-nv-aqos.qosTrafficType"sv, "4"sv);
     args.try_emplace("x-ml-video.configuredBitrateKbps"sv, "0"sv);
+    args.try_emplace("x-ss-general.encryptionEnabled"sv, "0"sv);
 
     stream::config_t config;
 
@@ -721,10 +751,15 @@ namespace rtsp_stream {
       config.controlProtocolType = util::from_view(args.at("x-nv-general.useReliableUdp"sv));
       config.packetsize = util::from_view(args.at("x-nv-video[0].packetSize"sv));
       config.minRequiredFecPackets = util::from_view(args.at("x-nv-vqos[0].fec.minRequiredFecPackets"sv));
-      config.nvFeatureFlags = util::from_view(args.at("x-nv-general.featureFlags"sv));
       config.mlFeatureFlags = util::from_view(args.at("x-ml-general.featureFlags"sv));
       config.audioQosType = util::from_view(args.at("x-nv-aqos.qosTrafficType"sv));
       config.videoQosType = util::from_view(args.at("x-nv-vqos[0].qosTrafficType"sv));
+      config.encryptionFlagsEnabled = util::from_view(args.at("x-ss-general.encryptionEnabled"sv));
+
+      // Legacy clients use nvFeatureFlags to indicate support for audio encryption
+      if (util::from_view(args.at("x-nv-general.featureFlags"sv)) & 0x20) {
+        config.encryptionFlagsEnabled |= SS_ENC_AUDIO;
+      }
 
       config.monitor.height = util::from_view(args.at("x-nv-video[0].clientViewportHt"sv));
       config.monitor.width = util::from_view(args.at("x-nv-video[0].clientViewportWd"sv));
@@ -796,7 +831,24 @@ namespace rtsp_stream {
       return;
     }
 
-    auto session = stream::session::alloc(config, launch_session->gcm_key, launch_session->iv, launch_session->av_ping_payload, launch_session->control_connect_data);
+    // Check that any required encryption is enabled
+    auto nettype = net::from_address(sock.remote_endpoint().address().to_string());
+    int encryption_mode;
+    if (nettype == net::net_e::PC || nettype == net::net_e::LAN) {
+      encryption_mode = config::stream.lan_encryption_mode;
+    }
+    else {
+      encryption_mode = config::stream.wan_encryption_mode;
+    }
+    if (encryption_mode == config::ENCRYPTION_MODE_MANDATORY &&
+        (config.encryptionFlagsEnabled & (SS_ENC_VIDEO | SS_ENC_AUDIO)) != (SS_ENC_VIDEO | SS_ENC_AUDIO)) {
+      BOOST_LOG(error) << "Rejecting client that cannot comply with mandatory encryption requirement"sv;
+
+      respond(sock, &option, 403, "Forbidden", req->sequenceNumber, {});
+      return;
+    }
+
+    auto session = stream::session::alloc(config, *launch_session);
 
     auto slot = server->accept(session);
     if (!slot) {
