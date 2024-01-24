@@ -190,7 +190,6 @@ namespace nvhttp {
     root.erase("root"s);
 
     root.put("root.uniqueid", http::unique_id);
-    auto &nodes = root.add_child("root.devices", pt::ptree {});
     for (auto &[_, client] : map_id_client) {
       pt::ptree node;
 
@@ -201,12 +200,10 @@ namespace nvhttp {
         pt::ptree named_cert_node;
         named_cert_node.put("name"s, named_cert.name);
         named_cert_node.put("cert"s, named_cert.cert);
-        named_cert_node.put("uniqueid"s, named_cert.uniqueID);
+        named_cert_node.put("uuid"s, named_cert.uniqueID);
         named_cert_nodes.push_back(std::make_pair(""s, named_cert_node));
       }
-      node.add_child("named_certs"s, named_cert_nodes);
-
-      nodes.push_back(std::make_pair(""s, node));
+      root.add_child("root.named_certs"s, named_cert_nodes);
     }
 
     try {
@@ -226,9 +223,9 @@ namespace nvhttp {
       return;
     }
 
-    pt::ptree root;
+    pt::ptree tree;
     try {
-      pt::read_json(config::nvhttp.file_state, root);
+      pt::read_json(config::nvhttp.file_state, tree);
     }
     catch (std::exception &e) {
       BOOST_LOG(error) << "Couldn't read "sv << config::nvhttp.file_state << ": "sv << e.what();
@@ -236,7 +233,7 @@ namespace nvhttp {
       return;
     }
 
-    auto unique_id_p = root.get_optional<std::string>("root.uniqueid");
+    auto unique_id_p = tree.get_optional<std::string>("root.uniqueid");
     if (!unique_id_p) {
       // This file doesn't contain moonlight credentials
       http::unique_id = uuid_util::uuid_t::generate().string();
@@ -244,35 +241,38 @@ namespace nvhttp {
     }
     http::unique_id = std::move(*unique_id_p);
 
-    auto device_nodes = root.get_child("root.devices");
+    auto root = tree.get_child("root");
+    auto &client = map_id_client.emplace("0123456789ABCDEF"s, client_t {}).first->second;
+    client.uniqueID = "0123456789ABCDEF"s;
 
-    for (auto &[_, device_node] : device_nodes) {
-      auto uniqID = device_node.get<std::string>("uniqueid");
-      auto &client = map_id_client.emplace(uniqID, client_t {}).first->second;
+    // Import from old format
+    if(root.get_child_optional("devices")) {
+    auto device_nodes = root.get_child("devices");
+      for (auto &[_, device_node] : device_nodes) {
+        auto uniqID = device_node.get<std::string>("uniqueid");
 
-      client.uniqueID = uniqID;
-
-      // Import from old format
-      if (device_node.count("certs")) {
-        for (auto &[_, el] : device_node.get_child("certs")) {
-          named_cert_t named_cert;
-          named_cert.name = ""s;
-          named_cert.cert = el.get_value<std::string>();
-          named_cert.uniqueID = uuid_util::uuid_t::generate().string();
-          client.named_certs.emplace_back(named_cert);
-          client.certs.emplace_back(named_cert.cert);
+        if (device_node.count("certs")) {
+          for (auto &[_, el] : device_node.get_child("certs")) {
+            named_cert_t named_cert;
+            named_cert.name = ""s;
+            named_cert.cert = el.get_value<std::string>();
+            named_cert.uniqueID = uuid_util::uuid_t::generate().string();
+            client.named_certs.emplace_back(named_cert);
+            client.certs.emplace_back(named_cert.cert);
+          }
         }
       }
+    }    
 
-      if (device_node.count("named_certs")) {
-        for (auto &[_, el] : device_node.get_child("named_certs")) {
-          named_cert_t named_cert;
-          named_cert.name = el.get_child("name").get_value<std::string>();
-          named_cert.cert = el.get_child("cert").get_value<std::string>();
-          named_cert.uniqueID = el.get_child("uniqueid").get_value<std::string>();
-          client.named_certs.emplace_back(named_cert);
-          client.certs.emplace_back(named_cert.cert);
-        }
+    
+    if (root.count("named_certs")) {
+      for (auto &[_, el] : root.get_child("named_certs")) {
+        named_cert_t named_cert;
+        named_cert.name = el.get_child("name").get_value<std::string>();
+        named_cert.cert = el.get_child("cert").get_value<std::string>();
+        named_cert.uniqueID = el.get_child("uuid").get_value<std::string>();
+        client.named_certs.emplace_back(named_cert);
+        client.certs.emplace_back(named_cert.cert);
       }
     }
   }
