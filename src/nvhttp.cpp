@@ -147,7 +147,7 @@ namespace nvhttp {
 
   // uniqueID, session
   std::unordered_map<std::string, pair_session_t> map_id_sess;
-  std::unordered_map<std::string, client_t> map_id_client;
+  client_t client_root;
 
   using args_t = SimpleWeb::CaseInsensitiveMultimap;
   using resp_https_t = std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response>;
@@ -190,21 +190,20 @@ namespace nvhttp {
     root.erase("root"s);
 
     root.put("root.uniqueid", http::unique_id);
-    for (auto &[_, client] : map_id_client) {
-      pt::ptree node;
+    client_t &client = client_root;
+    pt::ptree node;
 
-      node.put("uniqueid"s, client.uniqueID);
+    node.put("uniqueid"s, client.uniqueID);
 
-      pt::ptree named_cert_nodes;
-      for (auto &named_cert : client.named_certs) {
-        pt::ptree named_cert_node;
-        named_cert_node.put("name"s, named_cert.name);
-        named_cert_node.put("cert"s, named_cert.cert);
-        named_cert_node.put("uuid"s, named_cert.uniqueID);
-        named_cert_nodes.push_back(std::make_pair(""s, named_cert_node));
-      }
-      root.add_child("root.named_certs"s, named_cert_nodes);
+    pt::ptree named_cert_nodes;
+    for (auto &named_cert : client.named_certs) {
+      pt::ptree named_cert_node;
+      named_cert_node.put("name"s, named_cert.name);
+      named_cert_node.put("cert"s, named_cert.cert);
+      named_cert_node.put("uuid"s, named_cert.uniqueID);
+      named_cert_nodes.push_back(std::make_pair(""s, named_cert_node));
     }
+    root.add_child("root.named_certs"s, named_cert_nodes);
 
     try {
       pt::write_json(config::nvhttp.file_state, root);
@@ -242,7 +241,7 @@ namespace nvhttp {
     http::unique_id = std::move(*unique_id_p);
 
     auto root = tree.get_child("root");
-    auto &client = map_id_client.emplace("0123456789ABCDEF"s, client_t {}).first->second;
+    client_t client;
     client.uniqueID = "0123456789ABCDEF"s;
 
     // Import from old format
@@ -274,18 +273,21 @@ namespace nvhttp {
         client.certs.emplace_back(named_cert.cert);
       }
     }
+    client_root = client;
   }
 
   void
   update_id_client(const std::string &uniqueID, std::string &&cert, op_e op) {
     switch (op) {
       case op_e::ADD: {
-        auto &client = map_id_client[uniqueID];
+        client_t &client = client_root;
         client.certs.emplace_back(std::move(cert));
         client.uniqueID = uniqueID;
       } break;
       case op_e::REMOVE:
-        map_id_client.erase(uniqueID);
+        client_t client;
+        client.uniqueID = uniqueID;
+        client_root = client;
         break;
     }
 
@@ -624,7 +626,7 @@ namespace nvhttp {
     getservercert(sess, tree, pin);
 
     // set up named cert
-    auto &client = map_id_client[sess.client.uniqueID];
+    client_t &client = client_root;
     named_cert_t named_cert;
     named_cert.name = name;
     named_cert.cert = sess.client.cert;
@@ -663,7 +665,7 @@ namespace nvhttp {
       auto clientID = args.find("uniqueid"s);
 
       if (clientID != std::end(args)) {
-        if (auto it = map_id_client.find(clientID->second); it != std::end(map_id_client)) {
+        if (client_root.uniqueID == clientID->second) {
           pair_status = 1;
         }
       }
@@ -755,13 +757,12 @@ namespace nvhttp {
   pt::ptree
   get_all_clients() {
     pt::ptree named_cert_nodes;
-    for (auto &[_, client] : map_id_client) {
-      for (auto &named_cert : client.named_certs) {
-        pt::ptree named_cert_node;
-        named_cert_node.put("name"s, named_cert.name);
-        named_cert_node.put("uniqueID"s, named_cert.uniqueID);
-        named_cert_nodes.push_back(std::make_pair(""s, named_cert_node));
-      }
+    client_t &client = client_root;
+    for (auto &named_cert : client.named_certs) {
+      pt::ptree named_cert_node;
+      named_cert_node.put("name"s, named_cert.name);
+      named_cert_node.put("uniqueID"s, named_cert.uniqueID);
+      named_cert_nodes.push_back(std::make_pair(""s, named_cert_node));
     }
 
     return named_cert_nodes;
@@ -1018,13 +1019,12 @@ namespace nvhttp {
     conf_intern.servercert = read_file(config::nvhttp.cert.c_str());
 
     crypto::cert_chain_t cert_chain;
-    for (auto &[_, client] : map_id_client) {
-      for (auto &cert : client.certs) {
-        cert_chain.add(crypto::x509(cert));
-      }
-      for (auto &named_cert : client.named_certs) {
-        cert_chain.add(crypto::x509(named_cert.cert));
-      }
+    client_t &client = client_root;
+    for (auto &cert : client.certs) {
+      cert_chain.add(crypto::x509(cert));
+    }
+    for (auto &named_cert : client.named_certs) {
+      cert_chain.add(crypto::x509(named_cert.cert));
     }
 
     auto add_cert = std::make_shared<safe::queue_t<crypto::x509_t>>(30);
@@ -1150,7 +1150,9 @@ namespace nvhttp {
    */
   void
   erase_all_clients() {
-    map_id_client.clear();
+    client_t client;
+    client.uniqueID = "0123456789ABCDEF"s;
+    client_root = client;
     save_state();
   }
 
@@ -1165,29 +1167,29 @@ namespace nvhttp {
   int
   unpair_client(std::string uniqueID) {
     int removed = 0;
-    for (auto &[_, client] : map_id_client) {
-      for (auto it = client.named_certs.begin(); it != client.named_certs.end();) {
-        if ((*it).uniqueID == uniqueID) {
-          // Find matching cert and remove it
-          for (auto cert = client.certs.begin(); cert != client.certs.end();) {
-            if ((*cert) == (*it).cert) {
-              cert = client.certs.erase(cert);
-              removed++;
-            }
-            else {
-              ++cert;
-            }
+    client_t &client = client_root;
+    for (auto it = client.named_certs.begin(); it != client.named_certs.end();) {
+      if ((*it).uniqueID == uniqueID) {
+        // Find matching cert and remove it
+        for (auto cert = client.certs.begin(); cert != client.certs.end();) {
+          if ((*cert) == (*it).cert) {
+            cert = client.certs.erase(cert);
+            removed++;
           }
+          else {
+            ++cert;
+          }
+        }
 
-          // And then remove the named cert
-          it = client.named_certs.erase(it);
-          removed++;
-        }
-        else {
-          ++it;
-        }
+        // And then remove the named cert
+        it = client.named_certs.erase(it);
+        removed++;
+      }
+      else {
+        ++it;
       }
     }
+
     save_state();
     return removed;
   }
