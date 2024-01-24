@@ -246,8 +246,8 @@ namespace nvhttp {
     client.uniqueID = "0123456789ABCDEF"s;
 
     // Import from old format
-    if(root.get_child_optional("devices")) {
-    auto device_nodes = root.get_child("devices");
+    if (root.get_child_optional("devices")) {
+      auto device_nodes = root.get_child("devices");
       for (auto &[_, device_node] : device_nodes) {
         auto uniqID = device_node.get<std::string>("uniqueid");
 
