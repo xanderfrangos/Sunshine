@@ -262,9 +262,8 @@ namespace nvhttp {
           }
         }
       }
-    }    
+    }
 
-    
     if (root.count("named_certs")) {
       for (auto &[_, el] : root.get_child("named_certs")) {
         named_cert_t named_cert;
