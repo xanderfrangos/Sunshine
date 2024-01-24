@@ -121,7 +121,7 @@ namespace nvhttp {
   struct client_t {
     std::string uniqueID;
     std::vector<std::string> certs;
-    std::vector<named_cert_t> named_certs;
+    std::vector<named_cert_t> named_devices;
   };
 
   struct pair_session_t {
@@ -196,14 +196,14 @@ namespace nvhttp {
     node.put("uniqueid"s, client.uniqueID);
 
     pt::ptree named_cert_nodes;
-    for (auto &named_cert : client.named_certs) {
+    for (auto &named_cert : client.named_devices) {
       pt::ptree named_cert_node;
       named_cert_node.put("name"s, named_cert.name);
       named_cert_node.put("cert"s, named_cert.cert);
       named_cert_node.put("uuid"s, named_cert.uniqueID);
       named_cert_nodes.push_back(std::make_pair(""s, named_cert_node));
     }
-    root.add_child("root.named_certs"s, named_cert_nodes);
+    root.add_child("root.named_devices"s, named_cert_nodes);
 
     try {
       pt::write_json(config::nvhttp.file_state, root);
@@ -256,20 +256,20 @@ namespace nvhttp {
             named_cert.name = ""s;
             named_cert.cert = el.get_value<std::string>();
             named_cert.uniqueID = uuid_util::uuid_t::generate().string();
-            client.named_certs.emplace_back(named_cert);
+            client.named_devices.emplace_back(named_cert);
             client.certs.emplace_back(named_cert.cert);
           }
         }
       }
     }
 
-    if (root.count("named_certs")) {
-      for (auto &[_, el] : root.get_child("named_certs")) {
+    if (root.count("named_devices")) {
+      for (auto &[_, el] : root.get_child("named_devices")) {
         named_cert_t named_cert;
         named_cert.name = el.get_child("name").get_value<std::string>();
         named_cert.cert = el.get_child("cert").get_value<std::string>();
         named_cert.uniqueID = el.get_child("uuid").get_value<std::string>();
-        client.named_certs.emplace_back(named_cert);
+        client.named_devices.emplace_back(named_cert);
         client.certs.emplace_back(named_cert.cert);
       }
     }
@@ -631,7 +631,7 @@ namespace nvhttp {
     named_cert.name = name;
     named_cert.cert = sess.client.cert;
     named_cert.uniqueID = uuid_util::uuid_t::generate().string();
-    client.named_certs.emplace_back(named_cert);
+    client.named_devices.emplace_back(named_cert);
 
     // response to the request for pin
     std::ostringstream data;
@@ -758,7 +758,7 @@ namespace nvhttp {
   get_all_clients() {
     pt::ptree named_cert_nodes;
     client_t &client = client_root;
-    for (auto &named_cert : client.named_certs) {
+    for (auto &named_cert : client.named_devices) {
       pt::ptree named_cert_node;
       named_cert_node.put("name"s, named_cert.name);
       named_cert_node.put("uniqueID"s, named_cert.uniqueID);
@@ -1023,7 +1023,7 @@ namespace nvhttp {
     for (auto &cert : client.certs) {
       cert_chain.add(crypto::x509(cert));
     }
-    for (auto &named_cert : client.named_certs) {
+    for (auto &named_cert : client.named_devices) {
       cert_chain.add(crypto::x509(named_cert.cert));
     }
 
@@ -1168,7 +1168,7 @@ namespace nvhttp {
   unpair_client(std::string uniqueID) {
     int removed = 0;
     client_t &client = client_root;
-    for (auto it = client.named_certs.begin(); it != client.named_certs.end();) {
+    for (auto it = client.named_devices.begin(); it != client.named_devices.end();) {
       if ((*it).uniqueID == uniqueID) {
         // Find matching cert and remove it
         for (auto cert = client.certs.begin(); cert != client.certs.end();) {
@@ -1182,7 +1182,7 @@ namespace nvhttp {
         }
 
         // And then remove the named cert
-        it = client.named_certs.erase(it);
+        it = client.named_devices.erase(it);
         removed++;
       }
       else {
