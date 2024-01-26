@@ -702,7 +702,7 @@ namespace confighttp {
   }
 
   void
-  unpairClient(resp_https_t response, req_https_t request) {
+  unpair(resp_https_t response, req_https_t request) {
     if (!authenticate(response, request)) return;
 
     print_req(request);
