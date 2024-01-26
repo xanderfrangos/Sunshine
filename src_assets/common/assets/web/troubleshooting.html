@@ -195,7 +195,7 @@
         },
         unpairAll() {
           this.unpairAllPressed = true;
-          fetch("/api/clients/unpair", { method: "POST" })
+          fetch("/api/clients/unpair-all", { method: "POST" })
             .then((r) => r.json())
             .then((r) => {
               this.showApplyMessage = true;
