@@ -721,8 +721,8 @@ namespace confighttp {
     try {
       // TODO: Input Validation
       pt::read_json(ss, inputTree);
-      std::string uniqueid = inputTree.get<std::string>("uniqueid");
-      outputTree.put("status", nvhttp::unpair_client(uniqueid));
+      std::string uuid = inputTree.get<std::string>("uuid");
+      outputTree.put("status", nvhttp::unpair_client(uuid));
     }
     catch (std::exception &e) {
       BOOST_LOG(warning) << "UnpairClient: "sv << e.what();

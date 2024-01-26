@@ -761,7 +761,7 @@ namespace nvhttp {
     for (auto &named_cert : client.named_devices) {
       pt::ptree named_cert_node;
       named_cert_node.put("name"s, named_cert.name);
-      named_cert_node.put("uniqueID"s, named_cert.uniqueID);
+      named_cert_node.put("uuid"s, named_cert.uniqueID);
       named_cert_nodes.push_back(std::make_pair(""s, named_cert_node));
     }
 
