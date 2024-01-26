@@ -207,7 +207,7 @@
             });
         },
         unpairSingle(uuid) {
-          fetch("/api/clients/unpair-single", { method: "POST", body: JSON.stringify({ uuid }) }).then(() => {
+          fetch("/api/clients/unpair", { method: "POST", body: JSON.stringify({ uuid }) }).then(() => {
             this.showApplyMessage = true;
             this.refreshClients();
           });
