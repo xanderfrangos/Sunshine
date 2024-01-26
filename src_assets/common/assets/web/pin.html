@@ -22,19 +22,6 @@
       </div>
       <div id="status"></div>
     </form>
-    <div id="client-management" class="m-auto mt-5" style="max-width: 900px;">
-      <div class="container">
-        <div class="d-flex justify-content-end align-items-center mb-2">
-          <h2 class="text-center me-auto">Paired Clients</h2>
-          <div id="client-refresh" class="btn btn-sm d-flex align-items-center me-1"><i class="fas fa-fw fa-refresh me-1"></i> Refresh</div>
-        </div>
-        <div id="apply-alert" class="alert alert-success d-flex align-items-center" style="display: none !important;">
-          <div class="me-2"><b>Success!</b> Click 'Apply' to restart Sunshine and apply changes. This will terminate any running sessions.</div>
-          <button class="btn btn-success ms-auto apply">Apply</button>
-        </div>
-        <ul id="client-list" class="list-group"></ul>
-      </div>
-    </div>
   </div>
 </body>
 
@@ -68,39 +55,6 @@
             "#status"
           ).innerHTML = `<div class="alert alert-danger" role="alert">Pairing Failed: Check if the PIN is typed correctly</div>`;
         }
-        refreshClients();
       });
-  });
-  
-  const clientList = document.querySelector("#client-list");
-
-  function refreshClients() {
-    fetch("/api/clients/list")
-      .then((response) => response.json())
-      .then((response) => {
-        clientList.innerHTML = "";
-        if (response.status === 'true' && response.named_certs && response.named_certs.length) {
-          for (const named_cert of response.named_certs) {
-            clientList.innerHTML += `<div class="list-group-item d-flex"><div class="p-2 flex-grow-1">${named_cert.name != "" ? named_cert.name : "Unknown"}</div><div class="unpair p-2 ms-auto btn btn-danger" data-uniqueid="${named_cert.uniqueID}">Remove</div></div>`;
-          }
-        } else {
-          clientList.innerHTML = `<p class="p-2 text-center mt-2">There are no paired clients.</p>`;
-        }
-        for (const unpairOption of clientList.querySelectorAll(".unpair")) {
-          unpairOption.addEventListener("click", () => {
-            fetch("/api/clients/unpair-single", { method: "POST", body: JSON.stringify({ uniqueid: unpairOption.dataset.uniqueid }) }).then(() => {
-              document.querySelector("#apply-alert").style.setProperty('display', 'flex', 'important');
-              refreshClients();
-            });
-          });
-        }
-      });
-  }
-  refreshClients();
-
-  document.querySelector("#client-refresh").addEventListener("click", refreshClients);
-  document.querySelector("#apply-alert .apply").addEventListener("click", () => { 
-    document.querySelector("#apply-alert").style.setProperty('display', 'none', 'important');
-    fetch("/api/restart", { method: "POST" });
   });
 </script>
