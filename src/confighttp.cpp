@@ -725,7 +725,7 @@ namespace confighttp {
       outputTree.put("status", nvhttp::unpair_client(uuid));
     }
     catch (std::exception &e) {
-      BOOST_LOG(warning) << "UnpairClient: "sv << e.what();
+      BOOST_LOG(warning) << "Unpair: "sv << e.what();
       outputTree.put("status", false);
       outputTree.put("error", e.what());
       return;
