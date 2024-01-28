@@ -11,8 +11,8 @@
     <h1 class="my-4 text-center">PIN Pairing</h1>
     <form action="" class="form d-flex flex-column align-items-center" id="form">
       <div class="card flex-column d-flex p-4 mb-4">
-        <input type="number" pattern="\d*"  placeholder="PIN" id="pin-input" class="form-control mt-2" />
-        <input type="text" placeholder="Name (optional)" id="name-input" class="form-control my-4" />
+        <input type="number" pattern="\d*"  placeholder="PIN" id="pin-input" class="form-control mt-2" required />
+        <input type="text" placeholder="Device Name" id="name-input" class="form-control my-4" required />
         <button class="btn btn-primary">Send</button>
       </div>
       <div class="alert alert-warning">
