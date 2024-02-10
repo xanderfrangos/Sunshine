@@ -13,6 +13,7 @@
 
 #include "misc.h"
 #include "src/config.h"
+#include "src/logging.h"
 #include "src/main.h"
 #include "src/network.h"
 #include "src/nvhttp.h"
@@ -116,7 +117,7 @@ namespace platf::publish {
 
     DNS_SERVICE_INSTANCE instance {};
     instance.pszInstanceName = name.data();
-    instance.wPort = map_port(nvhttp::PORT_HTTP);
+    instance.wPort = net::map_port(nvhttp::PORT_HTTP);
     instance.pszHostName = host.data();
 
     // Setting these values ensures Windows mDNS answers comply with RFC 1035.

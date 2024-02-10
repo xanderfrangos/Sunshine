@@ -29,7 +29,9 @@
 #include "config.h"
 #include "confighttp.h"
 #include "crypto.h"
+#include "file_handler.h"
 #include "httpcommon.h"
+#include "logging.h"
 #include "main.h"
 #include "network.h"
 #include "nvhttp.h"
@@ -161,7 +163,7 @@ namespace confighttp {
 
     print_req(request);
 
-    std::string content = read_file(WEB_DIR "index.html");
+    std::string content = file_handler::read_file(WEB_DIR "index.html");
     SimpleWeb::CaseInsensitiveMultimap headers;
     headers.emplace("Content-Type", "text/html; charset=utf-8");
     response->write(content, headers);
@@ -173,7 +175,7 @@ namespace confighttp {
 
     print_req(request);
 
-    std::string content = read_file(WEB_DIR "pin.html");
+    std::string content = file_handler::read_file(WEB_DIR "pin.html");
     SimpleWeb::CaseInsensitiveMultimap headers;
     headers.emplace("Content-Type", "text/html; charset=utf-8");
     response->write(content, headers);
@@ -185,7 +187,7 @@ namespace confighttp {
 
     print_req(request);
 
-    std::string content = read_file(WEB_DIR "apps.html");
+    std::string content = file_handler::read_file(WEB_DIR "apps.html");
     SimpleWeb::CaseInsensitiveMultimap headers;
     headers.emplace("Content-Type", "text/html; charset=utf-8");
     headers.emplace("Access-Control-Allow-Origin", "https://images.igdb.com/");
@@ -198,7 +200,7 @@ namespace confighttp {
 
     print_req(request);
 
-    std::string content = read_file(WEB_DIR "clients.html");
+    std::string content = file_handler::read_file(WEB_DIR "clients.html");
     SimpleWeb::CaseInsensitiveMultimap headers;
     headers.emplace("Content-Type", "text/html; charset=utf-8");
     response->write(content, headers);
@@ -210,7 +212,7 @@ namespace confighttp {
 
     print_req(request);
 
-    std::string content = read_file(WEB_DIR "config.html");
+    std::string content = file_handler::read_file(WEB_DIR "config.html");
     SimpleWeb::CaseInsensitiveMultimap headers;
     headers.emplace("Content-Type", "text/html; charset=utf-8");
     response->write(content, headers);
@@ -222,7 +224,7 @@ namespace confighttp {
 
     print_req(request);
 
-    std::string content = read_file(WEB_DIR "password.html");
+    std::string content = file_handler::read_file(WEB_DIR "password.html");
     SimpleWeb::CaseInsensitiveMultimap headers;
     headers.emplace("Content-Type", "text/html; charset=utf-8");
     response->write(content, headers);
@@ -235,7 +237,7 @@ namespace confighttp {
       send_redirect(response, request, "/");
       return;
     }
-    std::string content = read_file(WEB_DIR "welcome.html");
+    std::string content = file_handler::read_file(WEB_DIR "welcome.html");
     SimpleWeb::CaseInsensitiveMultimap headers;
     headers.emplace("Content-Type", "text/html; charset=utf-8");
     response->write(content, headers);
@@ -247,7 +249,7 @@ namespace confighttp {
 
     print_req(request);
 
-    std::string content = read_file(WEB_DIR "troubleshooting.html");
+    std::string content = file_handler::read_file(WEB_DIR "troubleshooting.html");
     SimpleWeb::CaseInsensitiveMultimap headers;
     headers.emplace("Content-Type", "text/html; charset=utf-8");
     response->write(content, headers);
@@ -323,7 +325,7 @@ namespace confighttp {
 
     print_req(request);
 
-    std::string content = read_file(config::stream.file_apps.c_str());
+    std::string content = file_handler::read_file(config::stream.file_apps.c_str());
     SimpleWeb::CaseInsensitiveMultimap headers;
     headers.emplace("Content-Type", "application/json");
     response->write(content, headers);
@@ -335,7 +337,7 @@ namespace confighttp {
 
     print_req(request);
 
-    std::string content = read_file(config::sunshine.log_file.c_str());
+    std::string content = file_handler::read_file(config::sunshine.log_file.c_str());
     SimpleWeb::CaseInsensitiveMultimap headers;
     headers.emplace("Content-Type", "text/plain");
     response->write(SimpleWeb::StatusCode::success_ok, content, headers);
@@ -541,7 +543,7 @@ namespace confighttp {
     outputTree.put("platform", SUNSHINE_PLATFORM);
     outputTree.put("version", PROJECT_VER);
 
-    auto vars = config::parse_config(read_file(config::sunshine.config_file.c_str()));
+    auto vars = config::parse_config(file_handler::read_file(config::sunshine.config_file.c_str()));
 
     for (auto &[name, value] : vars) {
       outputTree.put(std::move(name), std::move(value));
@@ -574,7 +576,7 @@ namespace confighttp {
 
         configStream << kv.first << " = " << value << std::endl;
       }
-      write_file(config::sunshine.config_file.c_str(), configStream.str());
+      file_handler::write_file(config::sunshine.config_file.c_str(), configStream.str());
     }
     catch (std::exception &e) {
       BOOST_LOG(warning) << "SaveConfig: "sv << e.what();
@@ -776,7 +778,7 @@ namespace confighttp {
   start() {
     auto shutdown_event = mail::man->event<bool>(mail::shutdown);
 
-    auto port_https = map_port(PORT_HTTPS);
+    auto port_https = net::map_port(PORT_HTTPS);
     auto address_family = net::af_from_enum_string(config::sunshine.address_family);
 
     https_server_t server { config::nvhttp.cert, config::nvhttp.pkey };

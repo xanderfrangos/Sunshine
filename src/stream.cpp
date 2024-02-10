@@ -19,6 +19,7 @@ extern "C" {
 
 #include "config.h"
 #include "input.h"
+#include "logging.h"
 #include "main.h"
 #include "network.h"
 #include "stat_trackers.h"
@@ -128,7 +129,7 @@ namespace stream {
     }
 
     std::uint8_t iv[12];  // 12-byte IV is ideal for AES-GCM
-    std::uint32_t unused;
+    std::uint32_t frameNumber;
     std::uint8_t tag[16];
   };
 
@@ -246,15 +247,12 @@ namespace stream {
   // return bytes written on success
   // return -1 on error
   static inline int
-  encode_audio(bool encrypted, const audio::buffer_t &plaintext, audio_packet_t &destination, std::uint32_t avRiKeyIv, crypto::cipher::cbc_t &cbc) {
+  encode_audio(bool encrypted, const audio::buffer_t &plaintext, audio_packet_t &destination, crypto::aes_t &iv, crypto::cipher::cbc_t &cbc) {
     // If encryption isn't enabled
     if (!encrypted) {
       std::copy(std::begin(plaintext), std::end(plaintext), destination->payload());
       return plaintext.size();
     }
-
-    crypto::aes_t iv(16);
-    *(std::uint32_t *) iv.data() = util::endian::big<std::uint32_t>(avRiKeyIv + destination->rtp.sequenceNumber);
 
     return cbc.encrypt(std::string_view { (char *) std::begin(plaintext), plaintext.size() }, destination->payload(), &iv);
   }
@@ -401,6 +399,8 @@ namespace stream {
     struct {
       crypto::cipher::gcm_t cipher;
       crypto::aes_t legacy_input_enc_iv;  // Only used when the client doesn't support full control stream encryption
+      crypto::aes_t incoming_iv;
+      crypto::aes_t outgoing_iv;
 
       std::uint32_t connect_data;  // Used for new clients with ML_FF_SESSION_ID_V1
       std::string expected_peer_address;  // Only used for legacy clients without ML_FF_SESSION_ID_V1
@@ -411,6 +411,8 @@ namespace stream {
       platf::feedback_queue_t feedback_queue;
       safe::mail_raw_t::event_t<video::hdr_info_t> hdr_queue;
     } control;
+
+    std::uint32_t launch_session_id;
 
     safe::mail_raw_t::event_t<bool> shutdown_event;
     safe::signal_t controlEnd;
@@ -437,7 +439,7 @@ namespace stream {
 
     auto seq = session->control.seq++;
 
-    crypto::aes_t iv;
+    auto &iv = session->control.outgoing_iv;
     if (session->config.encryptionFlagsEnabled & SS_ENC_CONTROL_V2) {
       // We use the deterministic IV construction algorithm specified in NIST SP 800-38D
       // Section 8.2.1. The sequence number is our "invocation" field and the 'CH' in the
@@ -523,6 +525,9 @@ namespace stream {
           BOOST_LOG(debug) << "Initialized new control stream session by IP address match [v1]"sv;
         }
       }
+
+      // Once the control stream connection is established, RTSP session state can be torn down
+      rtsp_stream::launch_session_clear(session_p->launch_session_id);
 
       session_p->control.peer = peer;
 
@@ -977,7 +982,7 @@ namespace stream {
       std::string_view tagged_cipher { (char *) header->payload(), (size_t) tagged_cipher_length };
 
       auto &cipher = session->control.cipher;
-      crypto::aes_t iv;
+      auto &iv = session->control.incoming_iv;
       if (session->config.encryptionFlagsEnabled & SS_ENC_CONTROL_V2) {
         // We use the deterministic IV construction algorithm specified in NIST SP 800-38D
         // Section 8.2.1. The sequence number is our "invocation" field and the 'CC' in the
@@ -1031,8 +1036,12 @@ namespace stream {
     // This thread handles latency-sensitive control messages
     platf::adjust_thread_priority(platf::thread_priority_e::critical);
 
-    auto shutdown_event = mail::man->event<bool>(mail::broadcast_shutdown);
-    while (!shutdown_event->peek()) {
+    // Check for both the full shutdown event and the shutdown event for this
+    // broadcast to ensure we can inform connected clients of our graceful
+    // termination when we shut down.
+    auto shutdown_event = mail::man->event<bool>(mail::shutdown);
+    auto broadcast_shutdown_event = mail::man->event<bool>(mail::broadcast_shutdown);
+    while (!shutdown_event->peek() && !broadcast_shutdown_event->peek()) {
       bool has_session_awaiting_peer = false;
 
       {
@@ -1041,6 +1050,11 @@ namespace stream {
         auto now = std::chrono::steady_clock::now();
 
         KITTY_WHILE_LOOP(auto pos = std::begin(*server->_sessions), pos != std::end(*server->_sessions), {
+          // Don't perform additional session processing if we're shutting down
+          if (shutdown_event->peek() || broadcast_shutdown_event->peek()) {
+            break;
+          }
+
           auto session = *pos;
 
           if (now > session->pingTimeout) {
@@ -1241,6 +1255,7 @@ namespace stream {
     platf::adjust_thread_priority(platf::thread_priority_e::high);
 
     stat_trackers::min_max_avg_tracker<uint16_t> frame_processing_latency_tracker;
+    crypto::aes_t iv(12);
 
     while (auto packet = packets->pop()) {
       if (shutdown_event->peek()) {
@@ -1413,14 +1428,13 @@ namespace stream {
               //
               // The IV counter is 64 bits long which allows for 2^64 encrypted video packets
               // to be sent to each client before the IV repeats.
-              crypto::aes_t iv(12);
               std::copy_n((uint8_t *) &session->video.gcm_iv_counter, sizeof(session->video.gcm_iv_counter), std::begin(iv));
               iv[11] = 'V';  // Video stream
               session->video.gcm_iv_counter++;
 
               // Encrypt the target buffer in place
               auto *prefix = (video_packet_enc_prefix_t *) shards.prefix(x);
-              prefix->unused = 0;
+              prefix->frameNumber = packet->frame_index();
               std::copy(std::begin(iv), std::end(iv), prefix->iv);
               session->video.cipher->encrypt(std::string_view { (char *) inspect, (size_t) blocksize }, prefix->tag, &iv);
             }
@@ -1486,6 +1500,7 @@ namespace stream {
 
     audio_packet_t audio_packet { (audio_packet_raw_t *) malloc(sizeof(audio_packet_raw_t) + max_block_size) };
     fec::rs_t rs { reed_solomon_new(RTPA_DATA_SHARDS, RTPA_FEC_SHARDS) };
+    crypto::aes_t iv(16);
 
     // For unknown reasons, the RS parity matrix computed by our RS implementation
     // doesn't match the one Nvidia uses for audio data. I'm not exactly sure why,
@@ -1513,11 +1528,9 @@ namespace stream {
       auto sequenceNumber = session->audio.sequenceNumber;
       auto timestamp = session->audio.timestamp;
 
-      // This will be mapped to big-endianness later
-      // For now, encode_audio needs it to be the proper sequenceNumber
-      audio_packet->rtp.sequenceNumber = sequenceNumber;
+      *(std::uint32_t *) iv.data() = util::endian::big<std::uint32_t>(session->audio.avRiKeyId + sequenceNumber);
 
-      auto bytes = encode_audio(session->config.encryptionFlagsEnabled & SS_ENC_AUDIO, packet_data, audio_packet, session->audio.avRiKeyId, session->audio.cipher);
+      auto bytes = encode_audio(session->config.encryptionFlagsEnabled & SS_ENC_AUDIO, packet_data, audio_packet, iv, session->audio.cipher);
       if (bytes < 0) {
         BOOST_LOG(error) << "Couldn't encode audio packet"sv;
         break;
@@ -1587,9 +1600,9 @@ namespace stream {
   start_broadcast(broadcast_ctx_t &ctx) {
     auto address_family = net::af_from_enum_string(config::sunshine.address_family);
     auto protocol = address_family == net::IPV4 ? udp::v4() : udp::v6();
-    auto control_port = map_port(CONTROL_PORT);
-    auto video_port = map_port(VIDEO_STREAM_PORT);
-    auto audio_port = map_port(AUDIO_STREAM_PORT);
+    auto control_port = net::map_port(CONTROL_PORT);
+    auto video_port = net::map_port(VIDEO_STREAM_PORT);
+    auto audio_port = net::map_port(AUDIO_STREAM_PORT);
 
     if (ctx.control_server.bind(address_family, control_port)) {
       BOOST_LOG(error) << "Couldn't bind Control server to port ["sv << control_port << "], likely another process already bound to the port"sv;
@@ -1742,12 +1755,10 @@ namespace stream {
       return;
     }
 
-    // Enable QoS tagging on video traffic if requested by the client
-    if (session->config.videoQosType) {
-      auto address = session->video.peer.address();
-      session->video.qos = platf::enable_socket_qos(ref->video_sock.native_handle(), address,
-        session->video.peer.port(), platf::qos_data_type_e::video);
-    }
+    // Enable local prioritization and QoS tagging on video traffic if requested by the client
+    auto address = session->video.peer.address();
+    session->video.qos = platf::enable_socket_qos(ref->video_sock.native_handle(), address,
+      session->video.peer.port(), platf::qos_data_type_e::video, session->config.videoQosType != 0);
 
     BOOST_LOG(debug) << "Start capturing Video"sv;
     video::capture(session->mail, session->config.monitor, session);
@@ -1767,12 +1778,10 @@ namespace stream {
       return;
     }
 
-    // Enable QoS tagging on audio traffic if requested by the client
-    if (session->config.audioQosType) {
-      auto address = session->audio.peer.address();
-      session->audio.qos = platf::enable_socket_qos(ref->audio_sock.native_handle(), address,
-        session->audio.peer.port(), platf::qos_data_type_e::audio);
-    }
+    // Enable local prioritization and QoS tagging on audio traffic if requested by the client
+    auto address = session->audio.peer.address();
+    session->audio.qos = platf::enable_socket_qos(ref->audio_sock.native_handle(), address,
+      session->audio.peer.port(), platf::qos_data_type_e::audio, session->config.audioQosType != 0);
 
     BOOST_LOG(debug) << "Start capturing Audio"sv;
     audio::capture(session->mail, session->config.audio, session);
@@ -1887,6 +1896,7 @@ namespace stream {
       auto mail = std::make_shared<safe::mail_raw_t>();
 
       session->shutdown_event = mail->event<bool>(mail::shutdown);
+      session->launch_session_id = launch_session.id;
 
       session->config = config;
 

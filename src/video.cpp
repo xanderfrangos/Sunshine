@@ -10,13 +10,17 @@
 #include <boost/pointer_cast.hpp>
 
 extern "C" {
+#include <libavutil/imgutils.h>
 #include <libavutil/mastering_display_metadata.h>
+#include <libavutil/opt.h>
+#include <libavutil/pixdesc.h>
 #include <libswscale/swscale.h>
 }
 
 #include "cbs.h"
 #include "config.h"
 #include "input.h"
+#include "logging.h"
 #include "main.h"
 #include "nvenc/nvenc_base.h"
 #include "platform/common.h"
@@ -101,30 +105,37 @@ namespace video {
   public:
     int
     convert(platf::img_t &img) override {
-      av_frame_make_writable(sw_frame.get());
+      // If we need to add aspect ratio padding, we need to scale into an intermediate output buffer
+      bool requires_padding = (sw_frame->width != sws_output_frame->width || sw_frame->height != sws_output_frame->height);
 
-      const int linesizes[2] {
-        img.row_pitch, 0
-      };
+      // Setup the input frame using the caller's img_t
+      sws_input_frame->data[0] = img.data;
+      sws_input_frame->linesize[0] = img.row_pitch;
 
-      std::uint8_t *data[4];
-
-      data[0] = sw_frame->data[0] + offsetY;
-      if (sw_frame->format == AV_PIX_FMT_NV12) {
-        data[1] = sw_frame->data[1] + offsetUV * 2;
-        data[2] = nullptr;
-      }
-      else {
-        data[1] = sw_frame->data[1] + offsetUV;
-        data[2] = sw_frame->data[2] + offsetUV;
-        data[3] = nullptr;
-      }
-
-      int ret = sws_scale(sws.get(), (std::uint8_t *const *) &img.data, linesizes, 0, img.height, data, sw_frame->linesize);
-      if (ret <= 0) {
-        BOOST_LOG(error) << "Couldn't convert image to required format and/or size"sv;
-
+      // Perform color conversion and scaling to the final size
+      auto status = sws_scale_frame(sws.get(), requires_padding ? sws_output_frame.get() : sw_frame.get(), sws_input_frame.get());
+      if (status < 0) {
+        char string[AV_ERROR_MAX_STRING_SIZE];
+        BOOST_LOG(error) << "Couldn't scale frame: "sv << av_make_error_string(string, AV_ERROR_MAX_STRING_SIZE, status);
         return -1;
+      }
+
+      // If we require aspect ratio padding, copy the output frame into the final padded frame
+      if (requires_padding) {
+        auto fmt_desc = av_pix_fmt_desc_get((AVPixelFormat) sws_output_frame->format);
+        auto planes = av_pix_fmt_count_planes((AVPixelFormat) sws_output_frame->format);
+        for (int plane = 0; plane < planes; plane++) {
+          auto shift_h = plane == 0 ? 0 : fmt_desc->log2_chroma_h;
+          auto shift_w = plane == 0 ? 0 : fmt_desc->log2_chroma_w;
+          auto offset = ((offsetW >> shift_w) * fmt_desc->comp[plane].step) + (offsetH >> shift_h) * sw_frame->linesize[plane];
+
+          // Copy line-by-line to preserve leading padding for each row
+          for (int line = 0; line < sws_output_frame->height >> shift_h; line++) {
+            memcpy(sw_frame->data[plane] + offset + (line * sw_frame->linesize[plane]),
+              sws_output_frame->data[plane] + (line * sws_output_frame->linesize[plane]),
+              (size_t) (sws_output_frame->width >> shift_w) * fmt_desc->comp[plane].step);
+          }
+        }
       }
 
       // If frame is not a software frame, it means we still need to transfer from main memory
@@ -170,43 +181,13 @@ namespace video {
     /**
      * When preserving aspect ratio, ensure that padding is black
      */
-    int
+    void
     prefill() {
       auto frame = sw_frame ? sw_frame.get() : this->frame;
-      auto width = frame->width;
-      auto height = frame->height;
-
       av_frame_get_buffer(frame, 0);
-      sws_t sws {
-        sws_getContext(
-          width, height, AV_PIX_FMT_BGR0,
-          width, height, (AVPixelFormat) frame->format,
-          SWS_LANCZOS | SWS_ACCURATE_RND,
-          nullptr, nullptr, nullptr)
-      };
-
-      if (!sws) {
-        return -1;
-      }
-
-      util::buffer_t<std::uint32_t> img { (std::size_t)(width * height) };
-      std::fill(std::begin(img), std::end(img), 0);
-
-      const int linesizes[2] {
-        width, 0
-      };
-
       av_frame_make_writable(frame);
-
-      auto data = img.begin();
-      int ret = sws_scale(sws.get(), (std::uint8_t *const *) &data, linesizes, 0, height, frame->data, frame->linesize);
-      if (ret <= 0) {
-        BOOST_LOG(error) << "Couldn't convert image to required format and/or size"sv;
-
-        return -1;
-      }
-
-      return 0;
+      ptrdiff_t linesize[4] = { frame->linesize[0], frame->linesize[1], frame->linesize[2], frame->linesize[3] };
+      av_image_fill_black(frame->data, linesize, (AVPixelFormat) frame->format, frame->color_range, frame->width, frame->height);
     }
 
     int
@@ -223,9 +204,8 @@ namespace video {
         this->frame = frame;
       }
 
-      if (prefill()) {
-        return -1;
-      }
+      // Fill aspect ratio padding in the destination frame
+      prefill();
 
       auto out_width = frame->width;
       auto out_height = frame->height;
@@ -235,35 +215,69 @@ namespace video {
       out_width = in_width * scalar;
       out_height = in_height * scalar;
 
-      // result is always positive
-      auto offsetW = (frame->width - out_width) / 2;
-      auto offsetH = (frame->height - out_height) / 2;
-      offsetUV = (offsetW + offsetH * frame->width / 2) / 2;
-      offsetY = offsetW + offsetH * frame->width;
+      sws_input_frame.reset(av_frame_alloc());
+      sws_input_frame->width = in_width;
+      sws_input_frame->height = in_height;
+      sws_input_frame->format = AV_PIX_FMT_BGR0;
 
-      sws.reset(sws_getContext(
-        in_width, in_height, AV_PIX_FMT_BGR0,
-        out_width, out_height, format,
-        SWS_LANCZOS | SWS_ACCURATE_RND,
-        nullptr, nullptr, nullptr));
+      sws_output_frame.reset(av_frame_alloc());
+      sws_output_frame->width = out_width;
+      sws_output_frame->height = out_height;
+      sws_output_frame->format = format;
 
-      return sws ? 0 : -1;
+      // Result is always positive
+      offsetW = (frame->width - out_width) / 2;
+      offsetH = (frame->height - out_height) / 2;
+
+      sws.reset(sws_alloc_context());
+      if (!sws) {
+        return -1;
+      }
+
+      AVDictionary *options { nullptr };
+      av_dict_set_int(&options, "srcw", sws_input_frame->width, 0);
+      av_dict_set_int(&options, "srch", sws_input_frame->height, 0);
+      av_dict_set_int(&options, "src_format", sws_input_frame->format, 0);
+      av_dict_set_int(&options, "dstw", sws_output_frame->width, 0);
+      av_dict_set_int(&options, "dsth", sws_output_frame->height, 0);
+      av_dict_set_int(&options, "dst_format", sws_output_frame->format, 0);
+      av_dict_set_int(&options, "sws_flags", SWS_LANCZOS | SWS_ACCURATE_RND, 0);
+      av_dict_set_int(&options, "threads", config::video.min_threads, 0);
+
+      auto status = av_opt_set_dict(sws.get(), &options);
+      av_dict_free(&options);
+      if (status < 0) {
+        char string[AV_ERROR_MAX_STRING_SIZE];
+        BOOST_LOG(error) << "Failed to set SWS options: "sv << av_make_error_string(string, AV_ERROR_MAX_STRING_SIZE, status);
+        return -1;
+      }
+
+      status = sws_init_context(sws.get(), nullptr, nullptr);
+      if (status < 0) {
+        char string[AV_ERROR_MAX_STRING_SIZE];
+        BOOST_LOG(error) << "Failed to initialize SWS: "sv << av_make_error_string(string, AV_ERROR_MAX_STRING_SIZE, status);
+        return -1;
+      }
+
+      return 0;
     }
 
     // Store ownership when frame is hw_frame
     avcodec_frame_t hw_frame;
 
     avcodec_frame_t sw_frame;
+    avcodec_frame_t sws_input_frame;
+    avcodec_frame_t sws_output_frame;
     sws_t sws;
 
-    // offset of input image to output frame in pixels
-    int offsetUV;
-    int offsetY;
+    // Offset of input image to output frame in pixels
+    int offsetW;
+    int offsetH;
   };
 
   enum flag_e : uint32_t {
     DEFAULT = 0,
-    PARALLEL_ENCODING = 1 << 1,
+    PARALLEL_ENCODING = 1 << 1,  // Capture and encoding can run concurrently on separate threads
     H264_ONLY = 1 << 2,  // When HEVC is too heavy
     LIMITED_GOP_SIZE = 1 << 3,  // Some encoders don't like it when you have an infinite GOP_SIZE. *cough* VAAPI *cough*
     SINGLE_SLICE_ONLY = 1 << 4,  // Never use multiple slices <-- Older intel iGPU's ruin it for everyone else :P
@@ -271,6 +285,7 @@ namespace video {
     RELAXED_COMPLIANCE = 1 << 6,  // Use FF_COMPLIANCE_UNOFFICIAL compliance mode
     NO_RC_BUF_LIMIT = 1 << 7,  // Don't set rc_buffer_size
     REF_FRAMES_INVALIDATION = 1 << 8,  // Support reference frames invalidation
+    ALWAYS_REPROBE = 1 << 9,  // This is an encoder of last resort and we want to aggressively probe for a better one
   };
 
   struct encoder_platform_formats_t {
@@ -365,6 +380,10 @@ namespace video {
       std::vector<option_t> sdr_options;
       std::vector<option_t> hdr_options;
       std::vector<option_t> fallback_options;
+
+      // QP option to set in the case that CBR/VBR is not supported
+      // by the encoder. If CBR/VBR is guaranteed to be supported,
+      // don't specify this option to avoid wasteful encoder probing.
       std::optional<option_t> qp;
 
       std::string name;
@@ -581,7 +600,7 @@ namespace video {
       {},
       // Fallback options
       {},
-      std::nullopt,  // QP
+      std::nullopt,  // QP rate control fallback
       "av1_nvenc"s,
     },
     {
@@ -593,7 +612,7 @@ namespace video {
       {},
       // Fallback options
       {},
-      std::nullopt,  // QP
+      std::nullopt,  // QP rate control fallback
       "hevc_nvenc"s,
     },
     {
@@ -605,7 +624,7 @@ namespace video {
       {},
       // Fallback options
       {},
-      std::nullopt,  // QP
+      std::nullopt,  // QP rate control fallback
       "h264_nvenc"s,
     },
     PARALLEL_ENCODING | REF_FRAMES_INVALIDATION  // flags
@@ -638,6 +657,7 @@ namespace video {
         { "tune"s, NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY },
         { "rc"s, NV_ENC_PARAMS_RC_CBR },
         { "multipass"s, &config::video.nv_legacy.multipass },
+        { "aq"s, &config::video.nv_legacy.aq },
       },
       // SDR-specific options
       {},
@@ -645,7 +665,7 @@ namespace video {
       {},
       // Fallback options
       {},
-      std::nullopt,
+      std::nullopt,  // QP rate control fallback
       "av1_nvenc"s,
     },
     {
@@ -658,6 +678,7 @@ namespace video {
         { "tune"s, NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY },
         { "rc"s, NV_ENC_PARAMS_RC_CBR },
         { "multipass"s, &config::video.nv_legacy.multipass },
+        { "aq"s, &config::video.nv_legacy.aq },
       },
       // SDR-specific options
       {
@@ -668,7 +689,7 @@ namespace video {
         { "profile"s, (int) nv::profile_hevc_e::main_10 },
       },
       {},  // Fallback options
-      std::nullopt,
+      std::nullopt,  // QP rate control fallback
       "hevc_nvenc"s,
     },
     {
@@ -681,6 +702,7 @@ namespace video {
         { "rc"s, NV_ENC_PARAMS_RC_CBR },
         { "coder"s, &config::video.nv_legacy.h264_coder },
         { "multipass"s, &config::video.nv_legacy.multipass },
+        { "aq"s, &config::video.nv_legacy.aq },
       },
       // SDR-specific options
       {
@@ -688,7 +710,7 @@ namespace video {
       },
       {},  // HDR-specific options
       {},  // Fallback options
-      std::make_optional<encoder_t::option_t>({ "qp"s, &config::video.qp }),
+      std::nullopt,  // QP rate control fallback
       "h264_nvenc"s,
     },
     PARALLEL_ENCODING
@@ -718,7 +740,7 @@ namespace video {
       {},
       // Fallback options
       {},
-      std::make_optional<encoder_t::option_t>({ "qp"s, &config::video.qp }),
+      std::nullopt,  // QP rate control fallback
       "av1_qsv"s,
     },
     {
@@ -742,7 +764,7 @@ namespace video {
       },
       // Fallback options
       {},
-      std::make_optional<encoder_t::option_t>({ "qp"s, &config::video.qp }),
+      std::nullopt,  // QP rate control fallback
       "hevc_qsv"s,
     },
     {
@@ -769,7 +791,7 @@ namespace video {
       {
         { "low_power"s, 0 },  // Some old/low-end Intel GPUs don't support low power encoding
       },
-      std::make_optional<encoder_t::option_t>({ "qp"s, &config::video.qp }),
+      std::nullopt,  // QP rate control fallback
       "h264_qsv"s,
     },
     PARALLEL_ENCODING | CBR_WITH_VBR | RELAXED_COMPLIANCE | NO_RC_BUF_LIMIT
@@ -795,7 +817,7 @@ namespace video {
       {},  // SDR-specific options
       {},  // HDR-specific options
       {},  // Fallback options
-      std::make_optional<encoder_t::option_t>({ "qp_p"s, &config::video.qp }),
+      std::nullopt,  // QP rate control fallback
       "av1_amf"s,
     },
     {
@@ -816,7 +838,7 @@ namespace video {
       {},  // SDR-specific options
       {},  // HDR-specific options
       {},  // Fallback options
-      std::make_optional<encoder_t::option_t>({ "qp_p"s, &config::video.qp }),
+      std::nullopt,  // QP rate control fallback
       "hevc_amf"s,
     },
     {
@@ -840,7 +862,7 @@ namespace video {
       {
         { "usage"s, 2 /* AMF_VIDEO_ENCODER_USAGE_LOW_LATENCY */ },  // Workaround for https://github.com/GPUOpen-LibrariesAndSDKs/AMF/issues/410
       },
-      std::make_optional<encoder_t::option_t>({ "qp_p"s, &config::video.qp }),
+      std::nullopt,  // QP rate control fallback
       "h264_amf"s,
     },
     PARALLEL_ENCODING
@@ -866,7 +888,9 @@ namespace video {
       {},  // SDR-specific options
       {},  // HDR-specific options
       {},  // Fallback options
-      std::make_optional<encoder_t::option_t>("qp"s, &config::video.qp),
+
+      // QP rate control fallback
+      std::nullopt,
 
 #ifdef ENABLE_BROKEN_AV1_ENCODER
       // Due to bugs preventing on-demand IDR frames from working and very poor
@@ -891,7 +915,7 @@ namespace video {
       {},  // SDR-specific options
       {},  // HDR-specific options
       {},  // Fallback options
-      std::make_optional<encoder_t::option_t>("qp"s, &config::video.qp),
+      std::nullopt,  // QP rate control fallback
       "libx265"s,
     },
     {
@@ -903,10 +927,10 @@ namespace video {
       {},  // SDR-specific options
       {},  // HDR-specific options
       {},  // Fallback options
-      std::make_optional<encoder_t::option_t>("qp"s, &config::video.qp),
+      std::nullopt,  // QP rate control fallback
       "libx264"s,
     },
-    H264_ONLY | PARALLEL_ENCODING
+    H264_ONLY | PARALLEL_ENCODING | ALWAYS_REPROBE
   };
 
 #ifdef __linux__
@@ -1698,6 +1722,12 @@ namespace video {
           }
           else {
             ctx->rc_buffer_size = bitrate / config.framerate;
+
+#ifndef __APPLE__
+            if (encoder.name == "nvenc" && config::video.nv_legacy.vbv_percentage_increase > 0) {
+              ctx->rc_buffer_size += ctx->rc_buffer_size * config::video.nv_legacy.vbv_percentage_increase / 100;
+            }
+#endif
           }
         }
       }
@@ -2324,12 +2354,7 @@ namespace video {
   };
 
   int
-  validate_config(std::shared_ptr<platf::display_t> &disp, const encoder_t &encoder, const config_t &config) {
-    reset_display(disp, encoder.platform_formats->dev_type, config::video.output_name, config);
-    if (!disp) {
-      return -1;
-    }
-
+  validate_config(std::shared_ptr<platf::display_t> disp, const encoder_t &encoder, const config_t &config) {
     auto encode_device = make_encode_device(*disp, encoder, config);
     if (!encode_device) {
       return -1;
@@ -2450,7 +2475,13 @@ namespace video {
       if (disp->is_codec_supported(encoder.hevc.name, config_autoselect)) {
       retry_hevc:
         auto max_ref_frames_hevc = validate_config(disp, encoder, config_max_ref_frames);
-        auto autoselect_hevc = max_ref_frames_hevc >= 0 ? max_ref_frames_hevc : validate_config(disp, encoder, config_autoselect);
+
+        // If H.264 succeeded with max ref frames specified, assume that we can count on
+        // HEVC to also succeed with max ref frames specified if HEVC is supported.
+        auto autoselect_hevc = (max_ref_frames_hevc >= 0 || max_ref_frames_h264 >= 0) ?
+                                 max_ref_frames_hevc :
+                                 validate_config(disp, encoder, config_autoselect);
+
         if (autoselect_hevc < 0 && encoder.hevc.qp && encoder.hevc[encoder_t::CBR]) {
           // It's possible the encoder isn't accepting Constant Bit Rate. Turn off CBR and make another attempt
           encoder.hevc.capabilities.set();
@@ -2482,7 +2513,13 @@ namespace video {
       if (disp->is_codec_supported(encoder.av1.name, config_autoselect)) {
       retry_av1:
         auto max_ref_frames_av1 = validate_config(disp, encoder, config_max_ref_frames);
-        auto autoselect_av1 = max_ref_frames_av1 >= 0 ? max_ref_frames_av1 : validate_config(disp, encoder, config_autoselect);
+
+        // If H.264 succeeded with max ref frames specified, assume that we can count on
+        // AV1 to also succeed with max ref frames specified if AV1 is supported.
+        auto autoselect_av1 = (max_ref_frames_av1 >= 0 || max_ref_frames_h264 >= 0) ?
+                                max_ref_frames_av1 :
+                                validate_config(disp, encoder, config_autoselect);
+
         if (autoselect_av1 < 0 && encoder.av1.qp && encoder.av1[encoder_t::CBR]) {
           // It's possible the encoder isn't accepting Constant Bit Rate. Turn off CBR and make another attempt
           encoder.av1.capabilities.set();
@@ -2520,6 +2557,12 @@ namespace video {
       hevc.videoFormat = 1;
       av1.videoFormat = 2;
 
+      // Reset the display since we're switching from SDR to HDR
+      reset_display(disp, encoder.platform_formats->dev_type, config::video.output_name, config);
+      if (!disp) {
+        return false;
+      }
+
       // HDR is not supported with H.264. Don't bother even trying it.
       encoder.h264[flag] = flag != encoder_t::DYNAMIC_RANGE && validate_config(disp, encoder, h264) >= 0;
 
@@ -2556,6 +2599,11 @@ namespace video {
   int
   probe_encoders() {
     auto encoder_list = encoders;
+
+    // If we already have a good encoder, check to see if another probe is required
+    if (chosen_encoder && !(chosen_encoder->flags & ALWAYS_REPROBE) && !platf::needs_encoder_reenumeration()) {
+      return 0;
+    }
 
     // Restart encoder selection
     auto previous_encoder = chosen_encoder;

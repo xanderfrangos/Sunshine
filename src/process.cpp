@@ -22,6 +22,7 @@
 
 #include "config.h"
 #include "crypto.h"
+#include "logging.h"
 #include "main.h"
 #include "platform/common.h"
 #include "system_tray.h"
@@ -117,7 +118,12 @@ namespace proc {
       return boost::filesystem::path();
     }
 
-    BOOST_LOG(debug) << "Parsed executable ["sv << parts.at(0) << "] from command ["sv << cmd << ']';
+    BOOST_LOG(debug) << "Parsed target ["sv << parts.at(0) << "] from command ["sv << cmd << ']';
+
+    // If the target is a URL, don't parse any further here
+    if (parts.at(0).find("://") != std::string::npos) {
+      return boost::filesystem::path();
+    }
 
     // If the cmd path is not an absolute path, resolve it using our PATH variable
     boost::filesystem::path cmd_path(parts.at(0));
@@ -129,14 +135,14 @@ namespace proc {
       }
     }
 
-    BOOST_LOG(debug) << "Resolved executable ["sv << parts.at(0) << "] to path ["sv << cmd_path << ']';
+    BOOST_LOG(debug) << "Resolved target ["sv << parts.at(0) << "] to path ["sv << cmd_path << ']';
 
     // Now that we have a complete path, we can just use parent_path()
     return cmd_path.parent_path();
   }
 
   int
-  proc_t::execute(int app_id, rtsp_stream::launch_session_t launch_session) {
+  proc_t::execute(int app_id, std::shared_ptr<rtsp_stream::launch_session_t> launch_session) {
     // Ensure starting from a clean slate
     terminate();
 
@@ -157,14 +163,14 @@ namespace proc {
     // Add Stream-specific environment variables
     _env["SUNSHINE_APP_ID"] = std::to_string(_app_id);
     _env["SUNSHINE_APP_NAME"] = _app.name;
-    _env["SUNSHINE_CLIENT_WIDTH"] = std::to_string(launch_session.width);
-    _env["SUNSHINE_CLIENT_HEIGHT"] = std::to_string(launch_session.height);
-    _env["SUNSHINE_CLIENT_FPS"] = std::to_string(launch_session.fps);
-    _env["SUNSHINE_CLIENT_HDR"] = launch_session.enable_hdr ? "true" : "false";
-    _env["SUNSHINE_CLIENT_GCMAP"] = std::to_string(launch_session.gcmap);
-    _env["SUNSHINE_CLIENT_HOST_AUDIO"] = launch_session.host_audio ? "true" : "false";
-    _env["SUNSHINE_CLIENT_ENABLE_SOPS"] = launch_session.enable_sops ? "true" : "false";
-    int channelCount = launch_session.surround_info & (65535);
+    _env["SUNSHINE_CLIENT_WIDTH"] = std::to_string(launch_session->width);
+    _env["SUNSHINE_CLIENT_HEIGHT"] = std::to_string(launch_session->height);
+    _env["SUNSHINE_CLIENT_FPS"] = std::to_string(launch_session->fps);
+    _env["SUNSHINE_CLIENT_HDR"] = launch_session->enable_hdr ? "true" : "false";
+    _env["SUNSHINE_CLIENT_GCMAP"] = std::to_string(launch_session->gcmap);
+    _env["SUNSHINE_CLIENT_HOST_AUDIO"] = launch_session->host_audio ? "true" : "false";
+    _env["SUNSHINE_CLIENT_ENABLE_SOPS"] = launch_session->enable_sops ? "true" : "false";
+    int channelCount = launch_session->surround_info & (65535);
     switch (channelCount) {
       case 2:
         _env["SUNSHINE_CLIENT_AUDIO_CONFIGURATION"] = "2.0";

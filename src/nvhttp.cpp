@@ -22,7 +22,9 @@
 // local includes
 #include "config.h"
 #include "crypto.h"
+#include "file_handler.h"
 #include "httpcommon.h"
+#include "logging.h"
 #include "main.h"
 #include "network.h"
 #include "nvhttp.h"
@@ -147,6 +149,7 @@ namespace nvhttp {
   // uniqueID, session
   std::unordered_map<std::string, pair_session_t> map_id_sess;
   client_t client_root;
+  std::atomic<uint32_t> session_id_counter;
 
   using args_t = SimpleWeb::CaseInsensitiveMultimap;
   using resp_https_t = std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response>;
@@ -290,41 +293,53 @@ namespace nvhttp {
     }
   }
 
-  rtsp_stream::launch_session_t
+  std::shared_ptr<rtsp_stream::launch_session_t>
   make_launch_session(bool host_audio, const args_t &args) {
-    rtsp_stream::launch_session_t launch_session;
+    auto launch_session = std::make_shared<rtsp_stream::launch_session_t>();
+
+    launch_session->id = ++session_id_counter;
 
     auto rikey = util::from_hex_vec(get_arg(args, "rikey"), true);
-    std::copy(rikey.cbegin(), rikey.cend(), std::back_inserter(launch_session.gcm_key));
+    std::copy(rikey.cbegin(), rikey.cend(), std::back_inserter(launch_session->gcm_key));
 
-    launch_session.host_audio = host_audio;
+    launch_session->host_audio = host_audio;
     std::stringstream mode = std::stringstream(get_arg(args, "mode", "0x0x0"));
     // Split mode by the char "x", to populate width/height/fps
     int x = 0;
     std::string segment;
     while (std::getline(mode, segment, 'x')) {
-      if (x == 0) launch_session.width = atoi(segment.c_str());
-      if (x == 1) launch_session.height = atoi(segment.c_str());
-      if (x == 2) launch_session.fps = atoi(segment.c_str());
+      if (x == 0) launch_session->width = atoi(segment.c_str());
+      if (x == 1) launch_session->height = atoi(segment.c_str());
+      if (x == 2) launch_session->fps = atoi(segment.c_str());
       x++;
     }
-    launch_session.unique_id = (get_arg(args, "uniqueid", "unknown"));
-    launch_session.appid = util::from_view(get_arg(args, "appid", "unknown"));
-    launch_session.enable_sops = util::from_view(get_arg(args, "sops", "0"));
-    launch_session.surround_info = util::from_view(get_arg(args, "surroundAudioInfo", "196610"));
-    launch_session.gcmap = util::from_view(get_arg(args, "gcmap", "0"));
-    launch_session.enable_hdr = util::from_view(get_arg(args, "hdrMode", "0"));
+    launch_session->unique_id = (get_arg(args, "uniqueid", "unknown"));
+    launch_session->appid = util::from_view(get_arg(args, "appid", "unknown"));
+    launch_session->enable_sops = util::from_view(get_arg(args, "sops", "0"));
+    launch_session->surround_info = util::from_view(get_arg(args, "surroundAudioInfo", "196610"));
+    launch_session->gcmap = util::from_view(get_arg(args, "gcmap", "0"));
+    launch_session->enable_hdr = util::from_view(get_arg(args, "hdrMode", "0"));
+
+    // Encrypted RTSP is enabled with client reported corever >= 1
+    auto corever = util::from_view(get_arg(args, "corever", "0"));
+    if (corever >= 1) {
+      launch_session->rtsp_cipher = crypto::cipher::gcm_t {
+        launch_session->gcm_key, false
+      };
+      launch_session->rtsp_iv_counter = 0;
+    }
+    launch_session->rtsp_url_scheme = launch_session->rtsp_cipher ? "rtspenc://"s : "rtsp://"s;
 
     // Generate the unique identifiers for this connection that we will send later during RTSP handshake
     unsigned char raw_payload[8];
     RAND_bytes(raw_payload, sizeof(raw_payload));
-    launch_session.av_ping_payload = util::hex_vec(raw_payload);
-    RAND_bytes((unsigned char *) &launch_session.control_connect_data, sizeof(launch_session.control_connect_data));
+    launch_session->av_ping_payload = util::hex_vec(raw_payload);
+    RAND_bytes((unsigned char *) &launch_session->control_connect_data, sizeof(launch_session->control_connect_data));
 
-    launch_session.iv.resize(16);
+    launch_session->iv.resize(16);
     uint32_t prepend_iv = util::endian::big<uint32_t>(util::from_view(get_arg(args, "rikeyid")));
     auto prepend_iv_p = (uint8_t *) &prepend_iv;
-    std::copy(prepend_iv_p, prepend_iv_p + sizeof(prepend_iv), std::begin(launch_session.iv));
+    std::copy(prepend_iv_p, prepend_iv_p + sizeof(prepend_iv), std::begin(launch_session->iv));
     return launch_session;
   }
 
@@ -673,10 +688,18 @@ namespace nvhttp {
     tree.put("root.appversion", VERSION);
     tree.put("root.GfeVersion", GFE_VERSION);
     tree.put("root.uniqueid", http::unique_id);
-    tree.put("root.HttpsPort", map_port(PORT_HTTPS));
-    tree.put("root.ExternalPort", map_port(PORT_HTTP));
-    tree.put("root.mac", platf::get_mac_address(net::addr_to_normalized_string(local_endpoint.address())));
+    tree.put("root.HttpsPort", net::map_port(PORT_HTTPS));
+    tree.put("root.ExternalPort", net::map_port(PORT_HTTP));
     tree.put("root.MaxLumaPixelsHEVC", video::active_hevc_mode > 1 ? "1869449984" : "0");
+
+    // Only include the MAC address for requests sent from paired clients over HTTPS.
+    // For HTTP requests, use a placeholder MAC address that Moonlight knows to ignore.
+    if constexpr (std::is_same_v<SimpleWeb::HTTPS, T>) {
+      tree.put("root.mac", platf::get_mac_address(net::addr_to_normalized_string(local_endpoint.address())));
+    }
+    else {
+      tree.put("root.mac", "00:00:00:00:00:00");
+    }
 
     // Moonlight clients track LAN IPv6 addresses separately from LocalIP which is expected to
     // always be an IPv4 address. If we return that same IPv6 address here, it will clobber the
@@ -851,6 +874,17 @@ namespace nvhttp {
     host_audio = util::from_view(get_arg(args, "localAudioPlayMode"));
     auto launch_session = make_launch_session(host_audio, args);
 
+    auto encryption_mode = net::encryption_mode_for_address(request->remote_endpoint().address());
+    if (!launch_session->rtsp_cipher && encryption_mode == config::ENCRYPTION_MODE_MANDATORY) {
+      BOOST_LOG(error) << "Rejecting client that cannot comply with mandatory encryption requirement"sv;
+
+      tree.put("root.<xmlattr>.status_code", 403);
+      tree.put("root.<xmlattr>.status_message", "Encryption is mandatory for this host but unsupported by the client");
+      tree.put("root.gamesession", 0);
+
+      return;
+    }
+
     if (appid > 0) {
       auto err = proc::proc.execute(appid, launch_session);
       if (err) {
@@ -862,11 +896,13 @@ namespace nvhttp {
       }
     }
 
-    rtsp_stream::launch_session_raise(launch_session);
-
     tree.put("root.<xmlattr>.status_code", 200);
-    tree.put("root.sessionUrl0", "rtsp://"s + net::addr_to_url_escaped_string(request->local_endpoint().address()) + ':' + std::to_string(map_port(rtsp_stream::RTSP_SETUP_PORT)));
+    tree.put("root.sessionUrl0", launch_session->rtsp_url_scheme +
+                                   net::addr_to_url_escaped_string(request->local_endpoint().address()) + ':' +
+                                   std::to_string(net::map_port(rtsp_stream::RTSP_SETUP_PORT)));
     tree.put("root.gamesession", 1);
+
+    rtsp_stream::launch_session_raise(launch_session);
   }
 
   void
@@ -933,11 +969,26 @@ namespace nvhttp {
       }
     }
 
-    rtsp_stream::launch_session_raise(make_launch_session(host_audio, args));
+    auto launch_session = make_launch_session(host_audio, args);
+
+    auto encryption_mode = net::encryption_mode_for_address(request->remote_endpoint().address());
+    if (!launch_session->rtsp_cipher && encryption_mode == config::ENCRYPTION_MODE_MANDATORY) {
+      BOOST_LOG(error) << "Rejecting client that cannot comply with mandatory encryption requirement"sv;
+
+      tree.put("root.<xmlattr>.status_code", 403);
+      tree.put("root.<xmlattr>.status_message", "Encryption is mandatory for this host but unsupported by the client");
+      tree.put("root.gamesession", 0);
+
+      return;
+    }
 
     tree.put("root.<xmlattr>.status_code", 200);
-    tree.put("root.sessionUrl0", "rtsp://"s + net::addr_to_url_escaped_string(request->local_endpoint().address()) + ':' + std::to_string(map_port(rtsp_stream::RTSP_SETUP_PORT)));
+    tree.put("root.sessionUrl0", launch_session->rtsp_url_scheme +
+                                   net::addr_to_url_escaped_string(request->local_endpoint().address()) + ':' +
+                                   std::to_string(net::map_port(rtsp_stream::RTSP_SETUP_PORT)));
     tree.put("root.resume", 1);
+
+    rtsp_stream::launch_session_raise(launch_session);
   }
 
   void
@@ -997,8 +1048,8 @@ namespace nvhttp {
   start() {
     auto shutdown_event = mail::man->event<bool>(mail::shutdown);
 
-    auto port_http = map_port(PORT_HTTP);
-    auto port_https = map_port(PORT_HTTPS);
+    auto port_http = net::map_port(PORT_HTTP);
+    auto port_https = net::map_port(PORT_HTTPS);
     auto address_family = net::af_from_enum_string(config::sunshine.address_family);
 
     bool clean_slate = config::sunshine.flags[config::flag::FRESH_STATE];
@@ -1007,8 +1058,8 @@ namespace nvhttp {
       load_state();
     }
 
-    conf_intern.pkey = read_file(config::nvhttp.pkey.c_str());
-    conf_intern.servercert = read_file(config::nvhttp.cert.c_str());
+    conf_intern.pkey = file_handler::read_file(config::nvhttp.pkey.c_str());
+    conf_intern.servercert = file_handler::read_file(config::nvhttp.cert.c_str());
 
     crypto::cert_chain_t cert_chain;
     client_t &client = client_root;

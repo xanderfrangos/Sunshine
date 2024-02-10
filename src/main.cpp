@@ -21,7 +21,9 @@
 #include "config.h"
 #include "confighttp.h"
 #include "httpcommon.h"
+#include "logging.h"
 #include "main.h"
+#include "network.h"
 #include "nvhttp.h"
 #include "platform/common.h"
 #include "process.h"
@@ -52,17 +54,8 @@ nvprefs::nvprefs_interface nvprefs_instance;
 #endif
 
 thread_pool_util::ThreadPool task_pool;
-bl::sources::severity_logger<int> verbose(0);  // Dominating output
-bl::sources::severity_logger<int> debug(1);  // Follow what is happening
-bl::sources::severity_logger<int> info(2);  // Should be informed about
-bl::sources::severity_logger<int> warning(3);  // Strange events
-bl::sources::severity_logger<int> error(4);  // Recoverable errors
-bl::sources::severity_logger<int> fatal(5);  // Unrecoverable errors
 
 bool display_cursor = true;
-
-using text_sink = bl::sinks::asynchronous_sink<bl::sinks::text_ostream_backend>;
-boost::shared_ptr<text_sink> sink;
 
 struct NoDelete {
   void
@@ -70,36 +63,6 @@ struct NoDelete {
 };
 
 BOOST_LOG_ATTRIBUTE_KEYWORD(severity, "Severity", int)
-
-/**
- * @brief Print help to stdout.
- * @param name The name of the program.
- *
- * EXAMPLES:
- * ```cpp
- * print_help("sunshine");
- * ```
- */
-void
-print_help(const char *name) {
-  std::cout
-    << "Usage: "sv << name << " [options] [/path/to/configuration_file] [--cmd]"sv << std::endl
-    << "    Any configurable option can be overwritten with: \"name=value\""sv << std::endl
-    << std::endl
-    << "    Note: The configuration will be created if it doesn't exist."sv << std::endl
-    << std::endl
-    << "    --help                    | print help"sv << std::endl
-    << "    --creds username password | set user credentials for the Web manager"sv << std::endl
-    << "    --version                 | print the version of sunshine"sv << std::endl
-    << std::endl
-    << "    flags"sv << std::endl
-    << "        -0 | Read PIN from stdin"sv << std::endl
-    << "        -1 | Do not load previously saved state and do retain any state after shutdown"sv << std::endl
-    << "           | Effectively starting as if for the first time without overwriting any pairings with your devices"sv << std::endl
-    << "        -2 | Force replacement of headers in video stream"sv << std::endl
-    << "        -p | Enable/Disable UPnP"sv << std::endl
-    << std::endl;
-}
 
 namespace help {
   int
@@ -335,7 +298,7 @@ namespace service_ctrl {
         return false;
       }
 
-      uint16_t port_nbo = htons(map_port(confighttp::PORT_HTTPS));
+      uint16_t port_nbo = htons(net::map_port(confighttp::PORT_HTTPS));
       for (DWORD i = 0; i < tcp_table->dwNumEntries; i++) {
         auto &entry = tcp_table->table[i];
 
@@ -386,7 +349,7 @@ is_gamestream_enabled() {
  */
 void
 launch_ui() {
-  std::string url = "https://localhost:" + std::to_string(map_port(confighttp::PORT_HTTPS));
+  std::string url = "https://localhost:" + std::to_string(net::map_port(confighttp::PORT_HTTPS));
   platf::open_url(url);
 }
 
@@ -400,21 +363,8 @@ launch_ui() {
  */
 void
 launch_ui_with_path(std::string path) {
-  std::string url = "https://localhost:" + std::to_string(map_port(confighttp::PORT_HTTPS)) + path;
+  std::string url = "https://localhost:" + std::to_string(net::map_port(confighttp::PORT_HTTPS)) + path;
   platf::open_url(url);
-}
-
-/**
- * @brief Flush the log.
- *
- * EXAMPLES:
- * ```cpp
- * log_flush();
- * ```
- */
-void
-log_flush() {
-  sink->flush();
 }
 
 std::map<int, std::function<void()>> signal_handlers;
@@ -488,6 +438,9 @@ SessionMonitorWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
  */
 int
 main(int argc, char *argv[]) {
+  // the version should be printed to the log before anything else
+  BOOST_LOG(info) << PROJECT_NAME << " version: " << PROJECT_VER;
+
   lifetime::argv = argv;
 
   task_pool_util::TaskPool::task_id_t force_shutdown = nullptr;
@@ -689,7 +642,6 @@ main(int argc, char *argv[]) {
 
 #endif
 
-  BOOST_LOG(info) << PROJECT_NAME << " version: " << PROJECT_VER << std::endl;
   task_pool.start(1);
 
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
@@ -805,83 +757,4 @@ main(int argc, char *argv[]) {
 #endif
 
   return lifetime::desired_exit_code;
-}
-
-/**
- * @brief Read a file to string.
- * @param path The path of the file.
- * @return `std::string` : The contents of the file.
- *
- * EXAMPLES:
- * ```cpp
- * std::string contents = read_file("path/to/file");
- * ```
- */
-std::string
-read_file(const char *path) {
-  if (!std::filesystem::exists(path)) {
-    BOOST_LOG(debug) << "Missing file: " << path;
-    return {};
-  }
-
-  std::ifstream in(path);
-
-  std::string input;
-  std::string base64_cert;
-
-  while (!in.eof()) {
-    std::getline(in, input);
-    base64_cert += input + '\n';
-  }
-
-  return base64_cert;
-}
-
-/**
- * @brief Writes a file.
- * @param path The path of the file.
- * @param contents The contents to write.
- * @return `int` : `0` on success, `-1` on failure.
- *
- * EXAMPLES:
- * ```cpp
- * int write_status = write_file("path/to/file", "file contents");
- * ```
- */
-int
-write_file(const char *path, const std::string_view &contents) {
-  std::ofstream out(path);
-
-  if (!out.is_open()) {
-    return -1;
-  }
-
-  out << contents;
-
-  return 0;
-}
-
-/**
- * @brief Map a specified port based on the base port.
- * @param port The port to map as a difference from the base port.
- * @return `std:uint16_t` : The mapped port number.
- *
- * EXAMPLES:
- * ```cpp
- * std::uint16_t mapped_port = map_port(1);
- * ```
- */
-std::uint16_t
-map_port(int port) {
-  // calculate the port from the config port
-  auto mapped_port = (std::uint16_t)((int) config::sunshine.port + port);
-
-  // Ensure port is in the range of 1024-65535
-  if (mapped_port < 1024 || mapped_port > 65535) {
-    BOOST_LOG(warning) << "Port out of range: "sv << mapped_port;
-  }
-
-  // TODO: Ensure port is not already in use by another application
-
-  return mapped_port;
 }

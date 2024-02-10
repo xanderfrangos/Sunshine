@@ -15,6 +15,7 @@ typedef long NTSTATUS;
 #include "display.h"
 #include "misc.h"
 #include "src/config.h"
+#include "src/logging.h"
 #include "src/main.h"
 #include "src/platform/common.h"
 #include "src/stat_trackers.h"
@@ -1124,4 +1125,35 @@ namespace platf {
     return display_names;
   }
 
+  /**
+   * @brief Returns if GPUs/drivers have changed since the last call to this function.
+   * @return `true` if a change has occurred or if it is unknown whether a change occurred.
+   */
+  bool
+  needs_encoder_reenumeration() {
+    // Serialize access to the static DXGI factory
+    static std::mutex reenumeration_state_lock;
+    auto lg = std::lock_guard(reenumeration_state_lock);
+
+    // Keep a reference to the DXGI factory, which will keep track of changes internally.
+    static dxgi::factory1_t factory;
+    if (!factory || !factory->IsCurrent()) {
+      factory.reset();
+
+      auto status = CreateDXGIFactory1(IID_IDXGIFactory1, (void **) &factory);
+      if (FAILED(status)) {
+        BOOST_LOG(error) << "Failed to create DXGIFactory1 [0x"sv << util::hex(status).to_string_view() << ']';
+        factory.release();
+      }
+
+      // Always request reenumeration on the first streaming session just to ensure we
+      // can deal with any initialization races that may occur when the system is booting.
+      BOOST_LOG(info) << "Encoder reenumeration is required"sv;
+      return true;
+    }
+    else {
+      // The DXGI factory from last time is still current, so no encoder changes have occurred.
+      return false;
+    }
+  }
 }  // namespace platf

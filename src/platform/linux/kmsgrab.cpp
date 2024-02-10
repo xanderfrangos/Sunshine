@@ -14,12 +14,14 @@
 
 #include <filesystem>
 
+#include "src/logging.h"
 #include "src/main.h"
 #include "src/platform/common.h"
 #include "src/round_robin.h"
 #include "src/utility.h"
 #include "src/video.h"
 
+#include "cuda.h"
 #include "graphics.h"
 #include "vaapi.h"
 #include "wayland.h"
@@ -726,13 +728,11 @@ namespace platf {
           }
         }
 
+        BOOST_LOG(error) << "Couldn't find monitor ["sv << monitor_index << ']';
+        return -1;
+
       // Neatly break from nested for loop
       break_loop:
-        if (monitor != monitor_index) {
-          BOOST_LOG(error) << "Couldn't find monitor ["sv << monitor_index << ']';
-
-          return -1;
-        }
 
         // Look for the cursor plane for this CRTC
         cursor_plane_id = -1;
@@ -978,6 +978,20 @@ namespace platf {
           // We will map the entire region, but only copy what the source rectangle specifies
           size_t mapped_size = ((size_t) fb->pitches[0]) * fb->height;
           void *mapped_data = mmap(nullptr, mapped_size, PROT_READ, MAP_SHARED, plane_fd.el, fb->offsets[0]);
+
+          // If we got ENOSYS back, let's try to map it as a dumb buffer instead (required for Nvidia GPUs)
+          if (mapped_data == MAP_FAILED && errno == ENOSYS) {
+            drm_mode_map_dumb map = {};
+            map.handle = fb->handles[0];
+            if (drmIoctl(card.fd.el, DRM_IOCTL_MODE_MAP_DUMB, &map) < 0) {
+              BOOST_LOG(error) << "Failed to map cursor FB as dumb buffer: "sv << strerror(errno);
+              captured_cursor.visible = false;
+              return;
+            }
+
+            mapped_data = mmap(nullptr, mapped_size, PROT_READ, MAP_SHARED, card.fd.el, map.offset);
+          }
+
           if (mapped_data == MAP_FAILED) {
             BOOST_LOG(error) << "Failed to mmap cursor FB: "sv << strerror(errno);
             captured_cursor.visible = false;
@@ -1192,6 +1206,12 @@ namespace platf {
         }
 #endif
 
+#ifdef SUNSHINE_BUILD_CUDA
+        if (mem_type == mem_type_e::cuda) {
+          return cuda::make_avcodec_encode_device(width, height, false);
+        }
+#endif
+
         return std::make_unique<avcodec_encode_device_t>();
       }
 
@@ -1259,11 +1279,18 @@ namespace platf {
 
         auto &rgb = *rgb_opt;
 
+        gl::ctx.BindTexture(GL_TEXTURE_2D, rgb->tex[0]);
+
+        // Don't remove these lines, see https://github.com/LizardByte/Sunshine/issues/453
+        int w, h;
+        gl::ctx.GetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
+        gl::ctx.GetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
+        BOOST_LOG(debug) << "width and height: w "sv << w << " h "sv << h;
+
         if (!pull_free_image_cb(img_out)) {
           return platf::capture_e::interrupted;
         }
 
-        gl::ctx.BindTexture(GL_TEXTURE_2D, rgb->tex[0]);
         gl::ctx.GetTextureSubImage(rgb->tex[0], 0, img_offset_x, img_offset_y, 0, width, height, 1, GL_BGRA, GL_UNSIGNED_BYTE, img_out->height * img_out->row_pitch, img_out->data);
 
         if (cursor && captured_cursor.visible) {
@@ -1305,6 +1332,12 @@ namespace platf {
 #ifdef SUNSHINE_BUILD_VAAPI
         if (mem_type == mem_type_e::vaapi) {
           return va::make_avcodec_encode_device(width, height, dup(card.render_fd.el), img_offset_x, img_offset_y, true);
+        }
+#endif
+
+#ifdef SUNSHINE_BUILD_CUDA
+        if (mem_type == mem_type_e::cuda) {
+          return cuda::make_avcodec_gl_encode_device(width, height, img_offset_x, img_offset_y);
         }
 #endif
 
@@ -1427,13 +1460,18 @@ namespace platf {
         }
 
 #ifdef SUNSHINE_BUILD_VAAPI
-        if (!va::validate(card.render_fd.el)) {
-#else
-        if (true) {
-#endif
+        if (mem_type == mem_type_e::vaapi && !va::validate(card.render_fd.el)) {
           BOOST_LOG(warning) << "Monitor "sv << display_name << " doesn't support hardware encoding. Reverting back to GPU -> RAM -> GPU"sv;
           return -1;
         }
+#endif
+
+#ifndef SUNSHINE_BUILD_CUDA
+        if (mem_type == mem_type_e::cuda) {
+          BOOST_LOG(warning) << "Attempting to use NVENC without CUDA support. Reverting back to GPU -> RAM -> GPU"sv;
+          return -1;
+        }
+#endif
 
         return 0;
       }
@@ -1445,7 +1483,7 @@ namespace platf {
 
   std::shared_ptr<display_t>
   kms_display(mem_type_e hwdevice_type, const std::string &display_name, const ::video::config_t &config) {
-    if (hwdevice_type == mem_type_e::vaapi) {
+    if (hwdevice_type == mem_type_e::vaapi || hwdevice_type == mem_type_e::cuda) {
       auto disp = std::make_shared<kms::display_vram_t>(hwdevice_type);
 
       if (!disp->init(display_name, config)) {
