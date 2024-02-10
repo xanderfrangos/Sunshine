@@ -119,7 +119,6 @@ namespace nvhttp {
   };
 
   struct client_t {
-    std::string uniqueID;
     std::vector<std::string> certs;
     std::vector<named_cert_t> named_devices;
   };
@@ -193,8 +192,6 @@ namespace nvhttp {
     client_t &client = client_root;
     pt::ptree node;
 
-    node.put("uniqueid"s, client.uniqueID);
-
     pt::ptree named_cert_nodes;
     for (auto &named_cert : client.named_devices) {
       pt::ptree named_cert_node;
@@ -242,7 +239,6 @@ namespace nvhttp {
 
     auto root = tree.get_child("root");
     client_t client;
-    client.uniqueID = "0123456789ABCDEF"s;
 
     // Import from old format
     if (root.get_child_optional("devices")) {
@@ -282,11 +278,9 @@ namespace nvhttp {
       case op_e::ADD: {
         client_t &client = client_root;
         client.certs.emplace_back(std::move(cert));
-        client.uniqueID = uniqueID;
       } break;
       case op_e::REMOVE:
         client_t client;
-        client.uniqueID = uniqueID;
         client_root = client;
         break;
     }
@@ -665,9 +659,7 @@ namespace nvhttp {
       auto clientID = args.find("uniqueid"s);
 
       if (clientID != std::end(args)) {
-        if (client_root.uniqueID == clientID->second) {
-          pair_status = 1;
-        }
+        pair_status = 1;
       }
     }
 
@@ -1151,7 +1143,6 @@ namespace nvhttp {
   void
   erase_all_clients() {
     client_t client;
-    client.uniqueID = "0123456789ABCDEF"s;
     client_root = client;
     save_state();
   }
