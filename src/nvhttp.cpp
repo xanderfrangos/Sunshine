@@ -274,7 +274,6 @@ namespace nvhttp {
         client.certs.emplace_back(named_cert.cert);
       }
     }
-    
 
     // Empty certificate chain and import certs from file
     cert_chain.clear();
