@@ -30,16 +30,21 @@ namespace config {
 
     nvenc::nvenc_config nv;
     bool nv_realtime_hags;
+    bool nv_opengl_vulkan_on_dxgi;
+    bool nv_sunshine_high_power_mode;
 
     struct {
       int preset;
       int multipass;
       int h264_coder;
+      int aq;
+      int vbv_percentage_increase;
     } nv_legacy;
 
     struct {
       std::optional<int> qsv_preset;
       std::optional<int> qsv_cavlc;
+      bool qsv_slow_hevc;
     } qsv;
 
     struct {
@@ -54,6 +59,7 @@ namespace config {
       std::optional<int> amd_usage_av1;
       std::optional<int> amd_preanalysis;
       std::optional<int> amd_vbaq;
+      std::optional<int> amd_enforce_hrd;
       int amd_coder;
     } amd;
 
@@ -155,6 +161,7 @@ namespace config {
     bool elevated;
   };
   struct sunshine_t {
+    std::string locale;
     int min_log_level;
     std::bitset<flag::FLAG_SIZE> flags;
     std::string credentials_file;

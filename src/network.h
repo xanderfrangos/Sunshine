@@ -16,6 +16,9 @@ namespace net {
   void
   free_host(ENetHost *host);
 
+  std::uint16_t
+  map_port(int port);
+
   using host_t = util::safe_ptr<ENetHost, free_host>;
   using peer_t = ENetPeer *;
   using packet_t = util::safe_ptr<ENetPacket, enet_packet_destroy>;
@@ -84,4 +87,12 @@ namespace net {
    */
   std::string
   addr_to_url_escaped_string(boost::asio::ip::address address);
+
+  /**
+   * @brief Returns the encryption mode for the given remote endpoint address.
+   * @param address The address used to look up the desired encryption mode.
+   * @return The WAN or LAN encryption mode, based on the provided address.
+   */
+  int
+  encryption_mode_for_address(boost::asio::ip::address address);
 }  // namespace net

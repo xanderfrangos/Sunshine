@@ -11,7 +11,7 @@
 #include <glad/gl.h>
 
 #include "misc.h"
-#include "src/main.h"
+#include "src/logging.h"
 #include "src/platform/common.h"
 #include "src/utility.h"
 #include "src/video_colorspace.h"
@@ -277,6 +277,16 @@ namespace egl {
     std::array<file_t, nv12_img_t::num_fds> &&fds,
     const surface_descriptor_t &y, const surface_descriptor_t &uv);
 
+  /**
+   * @brief Creates biplanar YUV textures to render into.
+   * @param width Width of the target frame.
+   * @param height Height of the target frame.
+   * @param format Format of the target frame.
+   * @return The new RGB texture.
+   */
+  std::optional<nv12_t>
+  create_target(int width, int height, AVPixelFormat format);
+
   class cursor_t: public platf::img_t {
   public:
     int x, y;
@@ -316,7 +326,7 @@ namespace egl {
     static std::optional<sws_t>
     make(int in_width, int in_height, int out_width, int out_height, gl::tex_t &&tex);
     static std::optional<sws_t>
-    make(int in_width, int in_height, int out_width, int out_height, GLint gl_tex_internal_fmt);
+    make(int in_width, int in_height, int out_width, int out_height, AVPixelFormat format);
 
     // Convert the loaded image into the first two framebuffers
     int

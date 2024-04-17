@@ -3,9 +3,15 @@
  * @brief todo
  */
 #include "graphics.h"
+#include "src/file_handler.h"
+#include "src/logging.h"
 #include "src/video.h"
 
 #include <fcntl.h>
+
+extern "C" {
+#include <libavutil/pixdesc.h>
+}
 
 // I want to have as little build dependencies as possible
 // There aren't that many DRM_FORMAT I need to use, so define them here
@@ -16,7 +22,9 @@
 #define fourcc_mod_code(vendor, val) ((((uint64_t) vendor) << 56) | ((val) &0x00ffffffffffffffULL))
 #define DRM_FORMAT_MOD_INVALID fourcc_mod_code(0, ((1ULL << 56) - 1))
 
-#define SUNSHINE_SHADERS_DIR SUNSHINE_ASSETS_DIR "/shaders/opengl"
+#if !defined(SUNSHINE_SHADERS_DIR)  // for testing this needs to be defined in cmake as we don't do an install
+  #define SUNSHINE_SHADERS_DIR SUNSHINE_ASSETS_DIR "/shaders/opengl"
+#endif
 
 using namespace std::literals;
 namespace gl {
@@ -31,7 +39,7 @@ namespace gl {
   }
 
   tex_t::~tex_t() {
-    if (!size() == 0) {
+    if (size() != 0) {
       ctx.DeleteTextures(size(), begin());
     }
   }
@@ -643,6 +651,71 @@ namespace egl {
     return nv12;
   }
 
+  /**
+   * @brief Creates biplanar YUV textures to render into.
+   * @param width Width of the target frame.
+   * @param height Height of the target frame.
+   * @param format Format of the target frame.
+   * @return The new RGB texture.
+   */
+  std::optional<nv12_t>
+  create_target(int width, int height, AVPixelFormat format) {
+    nv12_t nv12 {
+      EGL_NO_DISPLAY,
+      EGL_NO_IMAGE,
+      EGL_NO_IMAGE,
+      gl::tex_t::make(2),
+      gl::frame_buf_t::make(2),
+    };
+
+    GLint y_format;
+    GLint uv_format;
+
+    // Determine the size of each plane element
+    auto fmt_desc = av_pix_fmt_desc_get(format);
+    if (fmt_desc->comp[0].depth <= 8) {
+      y_format = GL_R8;
+      uv_format = GL_RG8;
+    }
+    else if (fmt_desc->comp[0].depth <= 16) {
+      y_format = GL_R16;
+      uv_format = GL_RG16;
+    }
+    else {
+      BOOST_LOG(error) << "Unsupported target pixel format: "sv << format;
+      return std::nullopt;
+    }
+
+    gl::ctx.BindTexture(GL_TEXTURE_2D, nv12->tex[0]);
+    gl::ctx.TexStorage2D(GL_TEXTURE_2D, 1, y_format, width, height);
+
+    gl::ctx.BindTexture(GL_TEXTURE_2D, nv12->tex[1]);
+    gl::ctx.TexStorage2D(GL_TEXTURE_2D, 1, uv_format,
+      width >> fmt_desc->log2_chroma_w, height >> fmt_desc->log2_chroma_h);
+
+    nv12->buf.bind(std::begin(nv12->tex), std::end(nv12->tex));
+
+    GLenum attachments[] {
+      GL_COLOR_ATTACHMENT0,
+      GL_COLOR_ATTACHMENT1
+    };
+
+    for (int x = 0; x < sizeof(attachments) / sizeof(decltype(attachments[0])); ++x) {
+      gl::ctx.BindFramebuffer(GL_FRAMEBUFFER, nv12->buf[x]);
+      gl::ctx.DrawBuffers(1, &attachments[x]);
+
+      const float y_black[] = { 0.0f, 0.0f, 0.0f, 0.0f };
+      const float uv_black[] = { 0.5f, 0.5f, 0.5f, 0.5f };
+      gl::ctx.ClearBufferfv(GL_COLOR, 0, x == 0 ? y_black : uv_black);
+    }
+
+    gl::ctx.BindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    gl_drain_errors;
+
+    return nv12;
+  }
+
   void
   sws_t::apply_colorspace(const video::sunshine_colorspace_t &colorspace) {
     auto color_p = video::color_vectors_from_colorspace(colorspace);
@@ -709,7 +782,7 @@ namespace egl {
       for (int x = 0; x < count; ++x) {
         auto &compiled_source = compiled_sources[x];
 
-        compiled_source = gl::shader_t::compile(read_file(sources[x]), shader_type[x % 2]);
+        compiled_source = gl::shader_t::compile(file_handler::read_file(sources[x]), shader_type[x % 2]);
         gl_drain_errors;
 
         if (compiled_source.has_right()) {
@@ -806,10 +879,36 @@ namespace egl {
   }
 
   std::optional<sws_t>
-  sws_t::make(int in_width, int in_height, int out_width, int out_height, GLint gl_tex_internal_fmt) {
+  sws_t::make(int in_width, int in_height, int out_width, int out_height, AVPixelFormat format) {
+    GLint gl_format;
+
+    // Decide the bit depth format of the backing texture based the target frame format
+    auto fmt_desc = av_pix_fmt_desc_get(format);
+    switch (fmt_desc->comp[0].depth) {
+      case 8:
+        gl_format = GL_RGBA8;
+        break;
+
+      case 10:
+        gl_format = GL_RGB10_A2;
+        break;
+
+      case 12:
+        gl_format = GL_RGBA12;
+        break;
+
+      case 16:
+        gl_format = GL_RGBA16;
+        break;
+
+      default:
+        BOOST_LOG(error) << "Unsupported pixel format for EGL frame: "sv << (int) format;
+        return std::nullopt;
+    }
+
     auto tex = gl::tex_t::make(2);
     gl::ctx.BindTexture(GL_TEXTURE_2D, tex[0]);
-    gl::ctx.TexStorage2D(GL_TEXTURE_2D, 1, gl_tex_internal_fmt, in_width, in_height);
+    gl::ctx.TexStorage2D(GL_TEXTURE_2D, 1, gl_format, in_width, in_height);
 
     return make(in_width, in_height, out_width, out_height, std::move(tex));
   }

@@ -47,6 +47,40 @@ editing the `conf` file in a text editor. Use the examples as reference.
 `General <https://localhost:47990/config/#general>`__
 -----------------------------------------------------
 
+`locale <https://localhost:47990/config/#locale>`__
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+**Description**
+   The locale used for Sunshine's user interface.
+
+**Choices**
+
+.. table::
+   :widths: auto
+
+   =======   ===========
+   Value     Description
+   =======   ===========
+   de        German
+   en        English
+   en_GB     English (UK)
+   en_US     English (United States)
+   es        Spanish
+   fr        French
+   it        Italian
+   ru        Russian
+   sv        Swedish
+   zh        Chinese (Simplified)
+   =======   ===========
+
+**Default**
+   ``en``
+
+**Example**
+   .. code-block:: text
+
+      locale = en
+
 `sunshine_name <https://localhost:47990/config/#sunshine_name>`__
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -92,6 +126,24 @@ editing the `conf` file in a text editor. Use the examples as reference.
 
       min_log_level = info
 
+`channels <https://localhost:47990/config/#channels>`__
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+**Description**
+   Sunshine can support multiple clients streaming simultaneously, at the cost of higher CPU and GPU usage.
+
+   .. note:: All connected clients share control of the same streaming session.
+
+   .. warning:: Some hardware encoders may have limitations that reduce performance with multiple streams.
+
+**Default**
+   ``1``
+
+**Example**
+   .. code-block:: text
+
+      channels = 1
+
 `global_prep_cmd <https://localhost:47990/config/#global_prep_cmd>`__
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -105,99 +157,6 @@ editing the `conf` file in a text editor. Use the examples as reference.
    .. code-block:: text
 
       global_prep_cmd = [{"do":"nircmd.exe setdisplay 1280 720 32 144","undo":"nircmd.exe setdisplay 2560 1440 32 144"}]
-
-`Files <https://localhost:47990/config/#files>`__
--------------------------------------------------
-
-`file_apps <https://localhost:47990/config/#file_apps>`__
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-**Description**
-   The application configuration file path. The file contains a json formatted list of applications that can be started
-   by Moonlight.
-
-**Default**
-   OS and package dependent
-
-**Example**
-   .. code-block:: text
-
-      file_apps = apps.json
-
-`credentials_file <https://localhost:47990/config/#credentials_file>`__
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-**Description**
-   The file where user credentials for the UI are stored.
-
-**Default**
-   ``sunshine_state.json``
-
-**Example**
-   .. code-block:: text
-
-      credentials_file = sunshine_state.json
-
-`log_path <https://localhost:47990/config/#log_path>`__
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-**Description**
-   The path where the sunshine log is stored.
-
-**Default**
-   ``sunshine.log``
-
-**Example**
-   .. code-block:: text
-
-      log_path = sunshine.log
-
-`pkey <https://localhost:47990/config/#pkey>`__
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-**Description**
-   The private key used for the web UI and Moonlight client pairing. For best compatibility, this should be an RSA-2048 private key.
-
-   .. warning:: Not all Moonlight clients support ECDSA keys or RSA key lengths other than 2048 bits.
-
-**Default**
-   ``credentials/cakey.pem``
-
-**Example**
-   .. code-block:: text
-
-      pkey = /dir/pkey.pem
-
-`cert <https://localhost:47990/config/#cert>`__
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-**Description**
-   The certificate used for the web UI and Moonlight client pairing. For best compatibility, this should have an RSA-2048 public key.
-
-   .. warning:: Not all Moonlight clients support ECDSA keys or RSA key lengths other than 2048 bits.
-
-**Default**
-   ``credentials/cacert.pem``
-
-**Example**
-   .. code-block:: text
-
-      cert = /dir/cert.pem
-
-`file_state <https://localhost:47990/config/#file_state>`__
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-**Description**
-   The file where current state of Sunshine is stored.
-
-**Default**
-   ``sunshine_state.json``
-
-**Example**
-   .. code-block:: text
-
-      file_state = sunshine_state.json
-
 
 `Input <https://localhost:47990/config/#input>`__
 -------------------------------------------------
@@ -712,6 +671,32 @@ keybindings
 `Network <https://localhost:47990/config/#network>`__
 -----------------------------------------------------
 
+`upnp <https://localhost:47990/config/#upnp>`__
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+**Description**
+   Sunshine will attempt to open ports for streaming over the internet.
+
+**Choices**
+
+.. table::
+   :widths: auto
+
+   =====     ===========
+   Value     Description
+   =====     ===========
+   on        enable UPnP
+   off       disable UPnP
+   =====     ===========
+
+**Default**
+   ``disabled``
+
+**Example**
+   .. code-block:: text
+
+      upnp = on
+
 `address_family <https://localhost:47990/config/#address_family>`__
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -797,32 +782,6 @@ keybindings
    .. code-block:: text
 
       origin_web_ui_allowed = lan
-
-`upnp <https://localhost:47990/config/#upnp>`__
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-**Description**
-   Sunshine will attempt to open ports for streaming over the internet.
-
-**Choices**
-
-.. table::
-   :widths: auto
-
-   =====     ===========
-   Value     Description
-   =====     ===========
-   on        enable UPnP
-   off       disable UPnP
-   =====     ===========
-
-**Default**
-   ``disabled``
-
-**Example**
-   .. code-block:: text
-
-      upnp = on
 
 `external_ip <https://localhost:47990/config/#external_ip>`__
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -910,31 +869,100 @@ keybindings
 
       ping_timeout = 10000
 
-`Advanced <https://localhost:47990/config/#advanced>`__
--------------------------------------------------------
+`Config Files <https://localhost:47990/config/#files>`__
+--------------------------------------------------------
 
-`channels <https://localhost:47990/config/#channels>`__
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+`file_apps <https://localhost:47990/config/#file_apps>`__
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 **Description**
-   This will generate distinct video streams, unlike simply broadcasting to multiple Clients.
-
-   When multicasting, it could be useful to have different configurations for each connected Client.
-
-   For instance:
-
-   - Clients connected through WAN and LAN have different bitrate constraints.
-   - Decoders may require different settings for color.
-
-   .. warning:: CPU usage increases for each distinct video stream generated.
+   The application configuration file path. The file contains a json formatted list of applications that can be started
+   by Moonlight.
 
 **Default**
-   ``1``
+   OS and package dependent
 
 **Example**
    .. code-block:: text
 
-      channels = 1
+      file_apps = apps.json
+
+`credentials_file <https://localhost:47990/config/#credentials_file>`__
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+**Description**
+   The file where user credentials for the UI are stored.
+
+**Default**
+   ``sunshine_state.json``
+
+**Example**
+   .. code-block:: text
+
+      credentials_file = sunshine_state.json
+
+`log_path <https://localhost:47990/config/#log_path>`__
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+**Description**
+   The path where the sunshine log is stored.
+
+**Default**
+   ``sunshine.log``
+
+**Example**
+   .. code-block:: text
+
+      log_path = sunshine.log
+
+`pkey <https://localhost:47990/config/#pkey>`__
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+**Description**
+   The private key used for the web UI and Moonlight client pairing. For best compatibility, this should be an RSA-2048 private key.
+
+   .. warning:: Not all Moonlight clients support ECDSA keys or RSA key lengths other than 2048 bits.
+
+**Default**
+   ``credentials/cakey.pem``
+
+**Example**
+   .. code-block:: text
+
+      pkey = /dir/pkey.pem
+
+`cert <https://localhost:47990/config/#cert>`__
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+**Description**
+   The certificate used for the web UI and Moonlight client pairing. For best compatibility, this should have an RSA-2048 public key.
+
+   .. warning:: Not all Moonlight clients support ECDSA keys or RSA key lengths other than 2048 bits.
+
+**Default**
+   ``credentials/cacert.pem``
+
+**Example**
+   .. code-block:: text
+
+      cert = /dir/cert.pem
+
+`file_state <https://localhost:47990/config/#file_state>`__
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+**Description**
+   The file where current state of Sunshine is stored.
+
+**Default**
+   ``sunshine_state.json``
+
+**Example**
+   .. code-block:: text
+
+      file_state = sunshine_state.json
+
+`Advanced <https://localhost:47990/config/#advanced>`__
+-------------------------------------------------------
 
 `fec_percentage <https://localhost:47990/config/#fec_percentage>`__
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -975,19 +1003,19 @@ keybindings
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 **Description**
-   Minimum number of threads used for software encoding.
+   Minimum number of CPU threads used for encoding.
 
    .. note:: Increasing the value slightly reduces encoding efficiency, but the tradeoff is usually worth it to gain
       the use of more CPU cores for encoding. The ideal value is the lowest value that can reliably encode at your
       desired streaming settings on your hardware.
 
 **Default**
-   ``1``
+   ``2``
 
 **Example**
    .. code-block:: text
 
-      min_threads = 1
+      min_threads = 2
 
 `hevc_mode <https://localhost:47990/config/#hevc_mode>`__
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -1182,6 +1210,59 @@ keybindings
 
       nvenc_twopass = quarter_res
 
+`nvenc_spatial_aq <https://localhost:47990/config/#nvenc_spatial_aq>`__
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+**Description**
+   Assign higher QP values to flat regions of the video.
+   Recommended to enable when streaming at lower bitrates.
+
+   .. Note:: This option only applies when using NVENC `encoder`_.
+
+**Choices**
+
+.. table::
+   :widths: auto
+
+   ========== ===========
+   Value      Description
+   ========== ===========
+   disabled   Don't enable Spatial AQ (faster)
+   enabled    Enable Spatial AQ (slower)
+   ========== ===========
+
+**Default**
+   ``disabled``
+
+**Example**
+   .. code-block:: text
+
+      nvenc_spatial_aq = disabled
+
+`nvenc_vbv_increase <https://localhost:47990/config/#nvenc_vbv_increase>`__
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+**Description**
+   Single-frame VBV/HRD percentage increase.
+   By default sunshine uses single-frame VBV/HRD, which means any encoded video frame size is not expected to exceed requested bitrate divided by requested frame rate.
+   Relaxing this restriction can be beneficial and act as low-latency variable bitrate, but may also lead to packet loss if the network doesn't have buffer headroom to handle bitrate spikes.
+   Maximum accepted value is 400, which corresponds to 5x increased encoded video frame upper size limit.
+
+   .. Note:: This option only applies when using NVENC `encoder`_.
+
+   .. Warning:: Can lead to network packet loss.
+
+**Default**
+   ``0``
+
+**Range**
+   ``0-400``
+
+**Example**
+   .. code-block:: text
+
+      nvenc_vbv_increase = 0
+
 `nvenc_realtime_hags <https://localhost:47990/config/#nvenc_realtime_hags>`__
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -1213,6 +1294,69 @@ keybindings
    .. code-block:: text
 
       nvenc_realtime_hags = enabled
+
+`nvenc_latency_over_power <https://localhost:47990/config/#nvenc_latency_over_power>`__
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+**Description**
+   Adaptive P-State algorithm which NVIDIA drivers employ doesn't work well with low latency streaming, so sunshine requests high power mode explicitly.
+
+   .. Note:: This option only applies when using NVENC `encoder`_.
+
+   .. Warning:: Disabling it is not recommended since this can lead to significantly increased encoding latency.
+
+   .. Caution:: Applies to Windows only.
+
+**Choices**
+
+.. table::
+   :widths: auto
+
+   ========== ===========
+   Value      Description
+   ========== ===========
+   disabled   Sunshine doesn't change GPU power preferences (not recommended)
+   enabled    Sunshine requests high power mode explicitly
+   ========== ===========
+
+**Default**
+   ``enabled``
+
+**Example**
+   .. code-block:: text
+
+      nvenc_latency_over_power = enabled
+
+`nvenc_opengl_vulkan_on_dxgi <https://localhost:47990/config/#nvenc_opengl_vulkan_on_dxgi>`__
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+**Description**
+   Sunshine can't capture fullscreen OpenGL and Vulkan programs at full frame rate unless they present on top of DXGI.
+   This is system-wide setting that is reverted on sunshine program exit.
+
+   .. Note:: This option only applies when using NVENC `encoder`_.
+
+   .. Caution:: Applies to Windows only.
+
+**Choices**
+
+.. table::
+   :widths: auto
+
+   ========== ===========
+   Value      Description
+   ========== ===========
+   disabled   Sunshine leaves global Vulkan/OpenGL present method unchanged
+   enabled    Sunshine changes global Vulkan/OpenGL present method to "Prefer layered on DXGI Swapchain"
+   ========== ===========
+
+**Default**
+   ``enabled``
+
+**Example**
+   .. code-block:: text
+
+      nvenc_opengl_vulkan_on_dxgi = enabled
 
 `nvenc_h264_cavlc <https://localhost:47990/config/#nvenc_h264_cavlc>`__
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -1308,6 +1452,22 @@ keybindings
 
       qsv_coder = auto
 
+`qsv_slow_hevc <https://localhost:47990/config/#qsv_slow_hevc>`__
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+**Description**
+   This options enables use of HEVC on older Intel GPUs that only support low power encoding for H.264.
+
+   .. Caution:: Streaming performance may be significantly reduced when this option is enabled.
+
+**Default**
+   ``disabled``
+
+**Example**
+   .. code-block:: text
+
+      qsv_slow_hevc = disabled
+
 `AMD AMF Encoder <https://localhost:47990/config/#amd-amf-encoder>`__
 ---------------------------------------------------------------------
 
@@ -1363,12 +1523,12 @@ keybindings
    =========== ===========
 
 **Default**
-   ``vbr_latency``
+   ``cbr``
 
 **Example**
    .. code-block:: text
 
-      amd_rc = vbr_latency
+      amd_rc = cbr
 
 `amd_usage <https://localhost:47990/config/#amd_usage>`__
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -1383,14 +1543,15 @@ keybindings
 .. table::
    :widths: auto
 
-   =============== ===========
-   Value           Description
-   =============== ===========
-   transcoding     transcoding (slowest)
-   webcam          webcam (slow)
-   lowlatency      low latency (fast)
-   ultralowlatency ultra low latency (fastest)
-   =============== ===========
+   ======================= ===========
+   Value                   Description
+   ======================= ===========
+   transcoding             transcoding (slowest)
+   webcam                  webcam (slow)
+   lowlatency_high_quality low latency, high quality (fast)
+   lowlatency              low latency (faster)
+   ultralowlatency         ultra low latency (fastest)
+   ======================= ===========
 
 **Default**
    ``ultralowlatency``
@@ -1431,6 +1592,22 @@ keybindings
    .. code-block:: text
 
       amd_vbaq = enabled
+
+`amd_enforce_hrd <https://localhost:47990/config/#amd_enforce_hrd>`__
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+**Description**
+   Enable Hypothetical Reference Decoder (HRD) enforcement to help constrain the target bitrate.
+
+   .. note:: This option only applies when using amdvce `encoder`_.
+
+**Default**
+   ``enabled``
+
+**Example**
+   .. code-block:: text
+
+      amd_enforce_hrd = enabled
 
 `amd_coder <https://localhost:47990/config/#amd_coder>`__
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -6,8 +6,10 @@
 #include <linux/uinput.h>
 #include <poll.h>
 
+extern "C" {
 #include <libevdev/libevdev-uinput.h>
 #include <libevdev/libevdev.h>
+}
 
 #ifdef SUNSHINE_BUILD_X11
   #include <X11/Xutil.h>
@@ -20,10 +22,11 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <thread>
 
 #include "src/config.h"
 #include "src/input.h"
-#include "src/main.h"
+#include "src/logging.h"
 #include "src/platform/common.h"
 #include "src/utility.h"
 
@@ -584,8 +587,8 @@ namespace platf {
         weak_strong += data.rumble(tp);
       }
 
-      std::clamp<std::uint32_t>(weak_strong.first, 0, 0xFFFF);
-      std::clamp<std::uint32_t>(weak_strong.second, 0, 0xFFFF);
+      weak_strong.first = std::clamp<std::uint32_t>(weak_strong.first, 0, 0xFFFF);
+      weak_strong.second = std::clamp<std::uint32_t>(weak_strong.second, 0, 0xFFFF);
 
       old_rumble = weak_strong * gain / 0xFFFF;
       return old_rumble;

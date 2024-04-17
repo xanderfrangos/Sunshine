@@ -10,7 +10,9 @@
 #include <mutex>
 #include <string>
 
-#include "src/main.h"
+#include "src/config.h"
+#include "src/logging.h"
+#include "src/stat_trackers.h"
 #include "src/thread_safe.h"
 #include "src/utility.h"
 #include "src/video_colorspace.h"
@@ -18,6 +20,8 @@
 extern "C" {
 #include <moonlight-common-c/src/Limelight.h>
 }
+
+using namespace std::literals;
 
 struct sockaddr;
 struct AVFrame;
@@ -499,6 +503,22 @@ namespace platf {
     int env_width, env_height;
 
     int width, height;
+
+  protected:
+    // collect capture timing data (at loglevel debug)
+    stat_trackers::min_max_avg_tracker<double> sleep_overshoot_tracker;
+    void
+    log_sleep_overshoot(std::chrono::nanoseconds overshoot_ns) {
+      if (config::sunshine.min_log_level <= 1) {
+        // Print sleep overshoot stats to debug log every 20 seconds
+        auto print_info = [&](double min_overshoot, double max_overshoot, double avg_overshoot) {
+          auto f = stat_trackers::one_digit_after_decimal();
+          BOOST_LOG(debug) << "Sleep overshoot (min/max/avg): " << f % min_overshoot << "ms/" << f % max_overshoot << "ms/" << f % avg_overshoot << "ms";
+        };
+        // std::chrono::nanoseconds overshoot_ns = std::chrono::steady_clock::now() - next_frame;
+        sleep_overshoot_tracker.collect_and_callback_on_interval(overshoot_ns.count() / 1000000., print_info, 20s);
+      }
+    }
   };
 
   class mic_t {
@@ -558,6 +578,13 @@ namespace platf {
   std::vector<std::string>
   display_names(mem_type_e hwdevice_type);
 
+  /**
+   * @brief Returns if GPUs/drivers have changed since the last call to this function.
+   * @return `true` if a change has occurred or if it is unknown whether a change occurred.
+   */
+  bool
+  needs_encoder_reenumeration();
+
   boost::process::child
   run_command(bool elevated, bool interactive, const std::string &cmd, boost::filesystem::path &working_dir, const boost::process::environment &env, FILE *file, std::error_code &ec, boost::process::group *group);
 
@@ -608,8 +635,17 @@ namespace platf {
     audio,
     video
   };
+
+  /**
+   * @brief Enables QoS on the given socket for traffic to the specified destination.
+   * @param native_socket The native socket handle.
+   * @param address The destination address for traffic sent on this socket.
+   * @param port The destination port for traffic sent on this socket.
+   * @param data_type The type of traffic sent on this socket.
+   * @param dscp_tagging Specifies whether to enable DSCP tagging on outgoing traffic.
+   */
   std::unique_ptr<deinit_t>
-  enable_socket_qos(uintptr_t native_socket, boost::asio::ip::address &address, uint16_t port, qos_data_type_e data_type);
+  enable_socket_qos(uintptr_t native_socket, boost::asio::ip::address &address, uint16_t port, qos_data_type_e data_type, bool dscp_tagging);
 
   /**
    * @brief Open a url in the default web browser.

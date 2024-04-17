@@ -7,6 +7,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <thread>
 #include <unordered_map>
 
 #include <boost/asio.hpp>
@@ -15,7 +16,9 @@
 #include <boost/property_tree/ptree.hpp>
 
 #include "config.h"
-#include "main.h"
+#include "entry_handler.h"
+#include "file_handler.h"
+#include "logging.h"
 #include "nvhttp.h"
 #include "rtsp.h"
 #include "utility.h"
@@ -82,14 +85,17 @@ namespace config {
   #define AMF_VIDEO_ENCODER_AV1_USAGE_LOW_LATENCY 1
   #define AMF_VIDEO_ENCODER_AV1_USAGE_ULTRA_LOW_LATENCY 2
   #define AMF_VIDEO_ENCODER_AV1_USAGE_WEBCAM 3
-  #define AMF_VIDEO_ENCODER_HEVC_USAGE_TRANSCONDING 0
+  #define AMF_VIDEO_ENCODER_AV1_USAGE_LOW_LATENCY_HIGH_QUALITY 5
+  #define AMF_VIDEO_ENCODER_HEVC_USAGE_TRANSCODING 0
   #define AMF_VIDEO_ENCODER_HEVC_USAGE_ULTRA_LOW_LATENCY 1
   #define AMF_VIDEO_ENCODER_HEVC_USAGE_LOW_LATENCY 2
   #define AMF_VIDEO_ENCODER_HEVC_USAGE_WEBCAM 3
-  #define AMF_VIDEO_ENCODER_USAGE_TRANSCONDING 0
+  #define AMF_VIDEO_ENCODER_HEVC_USAGE_LOW_LATENCY_HIGH_QUALITY 5
+  #define AMF_VIDEO_ENCODER_USAGE_TRANSCODING 0
   #define AMF_VIDEO_ENCODER_USAGE_ULTRA_LOW_LATENCY 1
   #define AMF_VIDEO_ENCODER_USAGE_LOW_LATENCY 2
   #define AMF_VIDEO_ENCODER_USAGE_WEBCAM 3
+  #define AMF_VIDEO_ENCODER_USAGE_LOW_LATENCY_HIGH_QUALITY 5
   #define AMF_VIDEO_ENCODER_UNDEFINED 0
   #define AMF_VIDEO_ENCODER_CABAC 1
   #define AMF_VIDEO_ENCODER_CALV 2
@@ -141,20 +147,23 @@ namespace config {
     enum class usage_av1_e : int {
       transcoding = AMF_VIDEO_ENCODER_AV1_USAGE_TRANSCODING,
       webcam = AMF_VIDEO_ENCODER_AV1_USAGE_WEBCAM,
+      lowlatency_high_quality = AMF_VIDEO_ENCODER_AV1_USAGE_LOW_LATENCY_HIGH_QUALITY,
       lowlatency = AMF_VIDEO_ENCODER_AV1_USAGE_LOW_LATENCY,
       ultralowlatency = AMF_VIDEO_ENCODER_AV1_USAGE_ULTRA_LOW_LATENCY
     };
 
     enum class usage_hevc_e : int {
-      transcoding = AMF_VIDEO_ENCODER_HEVC_USAGE_TRANSCONDING,
+      transcoding = AMF_VIDEO_ENCODER_HEVC_USAGE_TRANSCODING,
       webcam = AMF_VIDEO_ENCODER_HEVC_USAGE_WEBCAM,
+      lowlatency_high_quality = AMF_VIDEO_ENCODER_HEVC_USAGE_LOW_LATENCY_HIGH_QUALITY,
       lowlatency = AMF_VIDEO_ENCODER_HEVC_USAGE_LOW_LATENCY,
       ultralowlatency = AMF_VIDEO_ENCODER_HEVC_USAGE_ULTRA_LOW_LATENCY
     };
 
     enum class usage_h264_e : int {
-      transcoding = AMF_VIDEO_ENCODER_USAGE_TRANSCONDING,
+      transcoding = AMF_VIDEO_ENCODER_USAGE_TRANSCODING,
       webcam = AMF_VIDEO_ENCODER_USAGE_WEBCAM,
+      lowlatency_high_quality = AMF_VIDEO_ENCODER_USAGE_LOW_LATENCY_HIGH_QUALITY,
       lowlatency = AMF_VIDEO_ENCODER_USAGE_LOW_LATENCY,
       ultralowlatency = AMF_VIDEO_ENCODER_USAGE_ULTRA_LOW_LATENCY
     };
@@ -192,12 +201,13 @@ namespace config {
 
     template <class T>
     std::optional<int>
-    usage_from_view(const std::string_view &rc) {
+    usage_from_view(const std::string_view &usage) {
 #define _CONVERT_(x) \
-  if (rc == #x##sv) return (int) T::x
+  if (usage == #x##sv) return (int) T::x
       _CONVERT_(transcoding);
       _CONVERT_(webcam);
       _CONVERT_(lowlatency);
+      _CONVERT_(lowlatency_high_quality);
       _CONVERT_(ultralowlatency);
 #undef _CONVERT_
       return std::nullopt;
@@ -320,7 +330,7 @@ namespace config {
     0,  // hevc_mode
     0,  // av1_mode
 
-    1,  // min_threads
+    2,  // min_threads
     {
       "superfast"s,  // preset
       "zerolatency"s,  // tune
@@ -329,25 +339,29 @@ namespace config {
 
     {},  // nv
     true,  // nv_realtime_hags
+    true,  // nv_opengl_vulkan_on_dxgi
+    true,  // nv_sunshine_high_power_mode
     {},  // nv_legacy
 
     {
       qsv::medium,  // preset
       qsv::_auto,  // cavlc
+      false,  // slow_hevc
     },  // qsv
 
     {
       (int) amd::quality_h264_e::balanced,  // quality (h264)
       (int) amd::quality_hevc_e::balanced,  // quality (hevc)
       (int) amd::quality_av1_e::balanced,  // quality (av1)
-      (int) amd::rc_h264_e::vbr_latency,  // rate control (h264)
-      (int) amd::rc_hevc_e::vbr_latency,  // rate control (hevc)
-      (int) amd::rc_av1_e::vbr_latency,  // rate control (av1)
+      (int) amd::rc_h264_e::cbr,  // rate control (h264)
+      (int) amd::rc_hevc_e::cbr,  // rate control (hevc)
+      (int) amd::rc_av1_e::cbr,  // rate control (av1)
       (int) amd::usage_h264_e::ultralowlatency,  // usage (h264)
       (int) amd::usage_hevc_e::ultralowlatency,  // usage (hevc)
       (int) amd::usage_av1_e::ultralowlatency,  // usage (av1)
       0,  // preanalysis
       1,  // vbaq
+      1,  // enforce_hrd
       (int) amd::coder_e::_auto,  // coder
     },  // amd
 
@@ -435,6 +449,7 @@ namespace config {
   };
 
   sunshine_t sunshine {
+    "en",  // locale
     2,  // min_log_level
     0,  // flags
     {},  // User file
@@ -843,6 +858,11 @@ namespace config {
     std::vector<std::string> list;
     list_string_f(vars, name, list);
 
+    // check if list is empty, i.e. when the value doesn't exist in the config file
+    if (list.empty()) {
+      return;
+    }
+
     // The framerate list must be cleared before adding values from the file configuration.
     // If the list is not cleared, then the specified parameters do not affect the behavior of the sunshine server.
     // That is, if you set only 30 fps in the configuration file, it will not work because by default, during initialization the list includes 10, 30, 60, 90 and 120 fps.
@@ -937,9 +957,13 @@ namespace config {
     string_f(vars, "sw_tune", video.sw.sw_tune);
 
     int_between_f(vars, "nvenc_preset", video.nv.quality_preset, { 1, 7 });
+    int_between_f(vars, "nvenc_vbv_increase", video.nv.vbv_percentage_increase, { 0, 400 });
+    bool_f(vars, "nvenc_spatial_aq", video.nv.adaptive_quantization);
     generic_f(vars, "nvenc_twopass", video.nv.two_pass, nv::twopass_from_view);
     bool_f(vars, "nvenc_h264_cavlc", video.nv.h264_cavlc);
     bool_f(vars, "nvenc_realtime_hags", video.nv_realtime_hags);
+    bool_f(vars, "nvenc_opengl_vulkan_on_dxgi", video.nv_opengl_vulkan_on_dxgi);
+    bool_f(vars, "nvenc_latency_over_power", video.nv_sunshine_high_power_mode);
 
 #ifndef __APPLE__
     video.nv_legacy.preset = video.nv.quality_preset + 11;
@@ -947,10 +971,13 @@ namespace config {
                                 video.nv.two_pass == nvenc::nvenc_two_pass::full_resolution    ? NV_ENC_TWO_PASS_FULL_RESOLUTION :
                                                                                                  NV_ENC_MULTI_PASS_DISABLED;
     video.nv_legacy.h264_coder = video.nv.h264_cavlc ? NV_ENC_H264_ENTROPY_CODING_MODE_CAVLC : NV_ENC_H264_ENTROPY_CODING_MODE_CABAC;
+    video.nv_legacy.aq = video.nv.adaptive_quantization;
+    video.nv_legacy.vbv_percentage_increase = video.nv.vbv_percentage_increase;
 #endif
 
     int_f(vars, "qsv_preset", video.qsv.qsv_preset, qsv::preset_from_view);
     int_f(vars, "qsv_coder", video.qsv.qsv_cavlc, qsv::coder_from_view);
+    bool_f(vars, "qsv_slow_hevc", video.qsv.qsv_slow_hevc);
 
     std::string quality;
     string_f(vars, "amd_quality", quality);
@@ -972,13 +999,14 @@ namespace config {
     std::string usage;
     string_f(vars, "amd_usage", usage);
     if (!usage.empty()) {
-      video.amd.amd_usage_h264 = amd::usage_from_view<amd::usage_h264_e>(rc);
-      video.amd.amd_usage_hevc = amd::usage_from_view<amd::usage_hevc_e>(rc);
-      video.amd.amd_usage_av1 = amd::usage_from_view<amd::usage_av1_e>(rc);
+      video.amd.amd_usage_h264 = amd::usage_from_view<amd::usage_h264_e>(usage);
+      video.amd.amd_usage_hevc = amd::usage_from_view<amd::usage_hevc_e>(usage);
+      video.amd.amd_usage_av1 = amd::usage_from_view<amd::usage_av1_e>(usage);
     }
 
     bool_f(vars, "amd_preanalysis", (bool &) video.amd.amd_preanalysis);
     bool_f(vars, "amd_vbaq", (bool &) video.amd.amd_vbaq);
+    bool_f(vars, "amd_enforce_hrd", (bool &) video.amd.amd_enforce_hrd);
 
     int_f(vars, "vt_coder", video.vt.vt_coder, vt::coder_from_view);
     int_f(vars, "vt_software", video.vt.vt_allow_sw, vt::allow_software_from_view);
@@ -1083,6 +1111,20 @@ namespace config {
       config::sunshine.flags[config::flag::UPNP].flip();
     }
 
+    string_restricted_f(vars, "locale", config::sunshine.locale, {
+                                                                   "de"sv,  // German
+                                                                   "en"sv,  // English
+                                                                   "en_GB"sv,  // English (UK)
+                                                                   "en_US"sv,  // English (US)
+                                                                   "es"sv,  // Spanish
+                                                                   "fr"sv,  // French
+                                                                   "it"sv,  // Italian
+                                                                   "ja"sv,  // Japanese
+                                                                   "ru"sv,  // Russian
+                                                                   "sv"sv,  // Swedish
+                                                                   "zh"sv,  // Chinese
+                                                                 });
+
     std::string log_level_string;
     string_f(vars, "min_log_level", log_level_string);
 
@@ -1143,7 +1185,7 @@ namespace config {
       auto line = argv[x];
 
       if (line == "--help"sv) {
-        print_help(*argv);
+        logging::print_help(*argv);
         return 1;
       }
 #ifdef _WIN32
@@ -1163,7 +1205,7 @@ namespace config {
           break;
         }
         if (apply_flags(line + 1)) {
-          print_help(*argv);
+          logging::print_help(*argv);
           return -1;
         }
       }
@@ -1177,7 +1219,7 @@ namespace config {
         else {
           TUPLE_EL(var, 1, parse_option(line, line_end));
           if (!var) {
-            print_help(*argv);
+            logging::print_help(*argv);
             return -1;
           }
 
@@ -1206,7 +1248,7 @@ namespace config {
       }
 
       // Read config file
-      auto vars = parse_config(read_file(sunshine.config_file.c_str()));
+      auto vars = parse_config(file_handler::read_file(sunshine.config_file.c_str()));
 
       for (auto &[name, value] : cmd_vars) {
         vars.insert_or_assign(std::move(name), std::move(value));

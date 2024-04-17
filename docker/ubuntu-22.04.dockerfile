@@ -33,9 +33,10 @@ apt-get install -y --no-install-recommends \
   build-essential \
   cmake=3.22.* \
   ca-certificates \
+  doxygen \
   git \
+  graphviz \
   libayatana-appindicator3-dev \
-  libavdevice-dev \
   libboost-filesystem-dev=1.74.* \
   libboost-locale-dev=1.74.* \
   libboost-log-dev=1.74.* \
@@ -60,7 +61,12 @@ apt-get install -y --no-install-recommends \
   libxfixes-dev \
   libxrandr-dev \
   libxtst-dev \
-  wget
+  python3.10 \
+  python3.10-venv \
+  udev \
+  wget \
+  x11-xserver-utils \
+  xvfb
 if [[ "${TARGETPLATFORM}" == 'linux/amd64' ]]; then
   apt-get install -y --no-install-recommends \
     libmfx-dev
@@ -119,6 +125,7 @@ source "$HOME/.nvm/nvm.sh"
 nvm use 20.9.0
 #Actually build
 cmake \
+  -DBUILD_WERROR=ON \
   -DCMAKE_CUDA_COMPILER:PATH=/build/cuda/bin/nvcc \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX=/usr \
@@ -132,6 +139,17 @@ cmake \
 make -j "$(nproc)"
 cpack -G DEB
 _MAKE
+
+# run tests
+WORKDIR /build/sunshine/build/tests
+# hadolint ignore=SC1091
+RUN <<_TEST
+#!/bin/bash
+set -e
+export DISPLAY=:1
+Xvfb ${DISPLAY} -screen 0 1024x768x24 &
+./test_sunshine --gtest_color=yes
+_TEST
 
 FROM scratch AS artifacts
 ARG BASE

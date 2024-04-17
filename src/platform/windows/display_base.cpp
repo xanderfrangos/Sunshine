@@ -3,8 +3,8 @@
  * @brief todo
  */
 #include <cmath>
-#include <codecvt>
 #include <initguid.h>
+#include <thread>
 
 #include <boost/process.hpp>
 
@@ -15,7 +15,7 @@ typedef long NTSTATUS;
 #include "display.h"
 #include "misc.h"
 #include "src/config.h"
-#include "src/main.h"
+#include "src/logging.h"
 #include "src/platform/common.h"
 #include "src/stat_trackers.h"
 #include "src/video.h"
@@ -154,7 +154,7 @@ namespace platf::dxgi {
       SetThreadExecutionState(ES_CONTINUOUS);
     });
 
-    stat_trackers::min_max_avg_tracker<double> sleep_overshoot_tracker;
+    sleep_overshoot_tracker.reset();
 
     while (true) {
       // This will return false if the HDR state changes or for any number of other
@@ -184,16 +184,8 @@ namespace platf::dxgi {
         }
         else {
           high_precision_sleep(sleep_period);
-
-          if (config::sunshine.min_log_level <= 1) {
-            // Print sleep overshoot stats to debug log every 20 seconds
-            auto print_info = [&](double min_overshoot, double max_overshoot, double avg_overshoot) {
-              auto f = stat_trackers::one_digit_after_decimal();
-              BOOST_LOG(debug) << "Sleep overshoot (min/max/avg): " << f % min_overshoot << "ms/" << f % max_overshoot << "ms/" << f % avg_overshoot << "ms";
-            };
-            std::chrono::nanoseconds overshoot_ns = std::chrono::steady_clock::now() - sleep_target;
-            sleep_overshoot_tracker.collect_and_callback_on_interval(overshoot_ns.count() / 1000000., print_info, 20s);
-          }
+          std::chrono::nanoseconds overshoot_ns = std::chrono::steady_clock::now() - sleep_target;
+          log_sleep_overshoot(overshoot_ns);
 
           status = snapshot(pull_free_image_cb, img_out, 0ms, *cursor);
 
@@ -358,8 +350,15 @@ namespace platf::dxgi {
     return false;
   }
 
+  /**
+   * @brief Tests to determine if the Desktop Duplication API can capture the given output.
+   * @details When testing for enumeration only, we avoid resyncing the thread desktop.
+   * @param adapter The DXGI adapter to use for capture.
+   * @param output The DXGI output to capture.
+   * @param enumeration_only Specifies whether this test is occurring for display enumeration.
+   */
   bool
-  test_dxgi_duplication(adapter_t &adapter, output_t &output) {
+  test_dxgi_duplication(adapter_t &adapter, output_t &output, bool enumeration_only) {
     D3D_FEATURE_LEVEL featureLevels[] {
       D3D_FEATURE_LEVEL_11_1,
       D3D_FEATURE_LEVEL_11_0,
@@ -397,14 +396,26 @@ namespace platf::dxgi {
     for (int x = 0; x < 2; ++x) {
       dup_t dup;
 
-      // Ensure we can duplicate the current display
-      syncThreadDesktop();
+      // Only resynchronize the thread desktop when not enumerating displays.
+      // During enumeration, the caller will do this only once to ensure
+      // a consistent view of available outputs.
+      if (!enumeration_only) {
+        syncThreadDesktop();
+      }
 
       status = output1->DuplicateOutput((IUnknown *) device.get(), &dup);
       if (SUCCEEDED(status)) {
         return true;
       }
-      std::this_thread::sleep_for(200ms);
+
+      // If we're not resyncing the thread desktop and we don't have permission to
+      // capture the current desktop, just bail immediately. Retrying won't help.
+      if (enumeration_only && status == E_ACCESSDENIED) {
+        break;
+      }
+      else {
+        std::this_thread::sleep_for(200ms);
+      }
     }
 
     BOOST_LOG(error) << "DuplicateOutput() test failed [0x"sv << util::hex(status).to_string_view() << ']';
@@ -446,10 +457,8 @@ namespace platf::dxgi {
       return -1;
     }
 
-    std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>, wchar_t> converter;
-
-    auto adapter_name = converter.from_bytes(config::video.adapter_name);
-    auto output_name = converter.from_bytes(display_name);
+    auto adapter_name = from_utf8(config::video.adapter_name);
+    auto output_name = from_utf8(display_name);
 
     adapter_t::pointer adapter_p;
     for (int tries = 0; tries < 2; ++tries) {
@@ -474,7 +483,7 @@ namespace platf::dxgi {
             continue;
           }
 
-          if (desc.AttachedToDesktop && test_dxgi_duplication(adapter_tmp, output_tmp)) {
+          if (desc.AttachedToDesktop && test_dxgi_duplication(adapter_tmp, output_tmp, false)) {
             output = std::move(output_tmp);
 
             offset_x = desc.DesktopCoordinates.left;
@@ -560,7 +569,7 @@ namespace platf::dxgi {
     DXGI_ADAPTER_DESC adapter_desc;
     adapter->GetDesc(&adapter_desc);
 
-    auto description = converter.to_bytes(adapter_desc.Description);
+    auto description = to_utf8(adapter_desc.Description);
     BOOST_LOG(info)
       << std::endl
       << "Device Description : " << description << std::endl
@@ -1065,12 +1074,17 @@ namespace platf {
 
     BOOST_LOG(debug) << "Detecting monitors..."sv;
 
-    std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>, wchar_t> converter;
-
     // We must set the GPU preference before calling any DXGI APIs!
     if (!dxgi::probe_for_gpu_preference(config::video.output_name)) {
       BOOST_LOG(warning) << "Failed to set GPU preference. Capture may not work!"sv;
     }
+
+    // We sync the thread desktop once before we start the enumeration process
+    // to ensure test_dxgi_duplication() returns consistent results for all GPUs
+    // even if the current desktop changes during our enumeration process.
+    // It is critical that we either fully succeed in enumeration or fully fail,
+    // otherwise it can lead to the capture code switching monitors unexpectedly.
+    syncThreadDesktop();
 
     dxgi::factory1_t factory;
     status = CreateDXGIFactory1(IID_IDXGIFactory1, (void **) &factory);
@@ -1087,7 +1101,7 @@ namespace platf {
       BOOST_LOG(debug)
         << std::endl
         << "====== ADAPTER ====="sv << std::endl
-        << "Device Name      : "sv << converter.to_bytes(adapter_desc.Description) << std::endl
+        << "Device Name      : "sv << to_utf8(adapter_desc.Description) << std::endl
         << "Device Vendor ID : 0x"sv << util::hex(adapter_desc.VendorId).to_string_view() << std::endl
         << "Device Device ID : 0x"sv << util::hex(adapter_desc.DeviceId).to_string_view() << std::endl
         << "Device Video Mem : "sv << adapter_desc.DedicatedVideoMemory / 1048576 << " MiB"sv << std::endl
@@ -1103,7 +1117,7 @@ namespace platf {
         DXGI_OUTPUT_DESC desc;
         output->GetDesc(&desc);
 
-        auto device_name = converter.to_bytes(desc.DeviceName);
+        auto device_name = to_utf8(desc.DeviceName);
 
         auto width = desc.DesktopCoordinates.right - desc.DesktopCoordinates.left;
         auto height = desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top;
@@ -1115,7 +1129,7 @@ namespace platf {
           << std::endl;
 
         // Don't include the display in the list if we can't actually capture it
-        if (desc.AttachedToDesktop && dxgi::test_dxgi_duplication(adapter, output)) {
+        if (desc.AttachedToDesktop && dxgi::test_dxgi_duplication(adapter, output, true)) {
           display_names.emplace_back(std::move(device_name));
         }
       }
@@ -1124,4 +1138,35 @@ namespace platf {
     return display_names;
   }
 
+  /**
+   * @brief Returns if GPUs/drivers have changed since the last call to this function.
+   * @return `true` if a change has occurred or if it is unknown whether a change occurred.
+   */
+  bool
+  needs_encoder_reenumeration() {
+    // Serialize access to the static DXGI factory
+    static std::mutex reenumeration_state_lock;
+    auto lg = std::lock_guard(reenumeration_state_lock);
+
+    // Keep a reference to the DXGI factory, which will keep track of changes internally.
+    static dxgi::factory1_t factory;
+    if (!factory || !factory->IsCurrent()) {
+      factory.reset();
+
+      auto status = CreateDXGIFactory1(IID_IDXGIFactory1, (void **) &factory);
+      if (FAILED(status)) {
+        BOOST_LOG(error) << "Failed to create DXGIFactory1 [0x"sv << util::hex(status).to_string_view() << ']';
+        factory.release();
+      }
+
+      // Always request reenumeration on the first streaming session just to ensure we
+      // can deal with any initialization races that may occur when the system is booting.
+      BOOST_LOG(info) << "Encoder reenumeration is required"sv;
+      return true;
+    }
+    else {
+      // The DXGI factory from last time is still current, so no encoder changes have occurred.
+      return false;
+    }
+  }
 }  // namespace platf
