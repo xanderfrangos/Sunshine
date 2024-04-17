@@ -366,7 +366,7 @@
     "restart_sunshine_desc": "If Sunshine isn't working properly, you can try restarting it. This will terminate any running sessions.",
     "restart_sunshine_success": "Sunshine is restarting",
     "troubleshooting": "Troubleshooting",
-    "unpair_all": "Unpair Devices",
+    "unpair_all": "Unpair All",
     "unpair_all_desc": "Remove your paired devices. Unpaired devices with an active session will remain connected, but cannot start or resume a session.",
     "unpair_all_error": "Error while unpairing",
     "unpair_all_success": "However, the device(s) may still be in an active session. Use the 'Force Close' button above to end any open sessions.",
