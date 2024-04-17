@@ -14,14 +14,13 @@ extern "C" {
 #include <libavutil/mastering_display_metadata.h>
 #include <libavutil/opt.h>
 #include <libavutil/pixdesc.h>
-#include <libswscale/swscale.h>
 }
 
 #include "cbs.h"
 #include "config.h"
+#include "globals.h"
 #include "input.h"
 #include "logging.h"
-#include "main.h"
 #include "nvenc/nvenc_base.h"
 #include "platform/common.h"
 #include "sync.h"
@@ -50,12 +49,6 @@ namespace video {
   free_buffer(AVBufferRef *ref) {
     av_buffer_unref(&ref);
   }
-
-  using avcodec_ctx_t = util::safe_ptr<AVCodecContext, free_ctx>;
-  using avcodec_frame_t = util::safe_ptr<AVFrame, free_frame>;
-  using avcodec_buffer_t = util::safe_ptr<AVBufferRef, free_buffer>;
-  using sws_t = util::safe_ptr<SwsContext, sws_freeContext>;
-  using img_event_t = std::shared_ptr<safe::event_t<std::shared_ptr<platf::img_t>>>;
 
   namespace nv {
 
@@ -86,11 +79,6 @@ namespace video {
       main_10 = 2,
     };
   }  // namespace qsv
-
-  platf::mem_type_e
-  map_base_dev_type(AVHWDeviceType type);
-  platf::pix_fmt_e
-  map_pix_fmt(AVPixelFormat fmt);
 
   util::Either<avcodec_buffer_t, int>
   dxgi_init_avcodec_hardware_input_buffer(platf::avcodec_encode_device_t *);
@@ -288,137 +276,6 @@ namespace video {
     ALWAYS_REPROBE = 1 << 9,  // This is an encoder of last resort and we want to aggressively probe for a better one
   };
 
-  struct encoder_platform_formats_t {
-    virtual ~encoder_platform_formats_t() = default;
-    platf::mem_type_e dev_type;
-    platf::pix_fmt_e pix_fmt_8bit, pix_fmt_10bit;
-  };
-
-  struct encoder_platform_formats_avcodec: encoder_platform_formats_t {
-    using init_buffer_function_t = std::function<util::Either<avcodec_buffer_t, int>(platf::avcodec_encode_device_t *)>;
-
-    encoder_platform_formats_avcodec(
-      const AVHWDeviceType &avcodec_base_dev_type,
-      const AVHWDeviceType &avcodec_derived_dev_type,
-      const AVPixelFormat &avcodec_dev_pix_fmt,
-      const AVPixelFormat &avcodec_pix_fmt_8bit,
-      const AVPixelFormat &avcodec_pix_fmt_10bit,
-      const init_buffer_function_t &init_avcodec_hardware_input_buffer_function):
-        avcodec_base_dev_type { avcodec_base_dev_type },
-        avcodec_derived_dev_type { avcodec_derived_dev_type },
-        avcodec_dev_pix_fmt { avcodec_dev_pix_fmt },
-        avcodec_pix_fmt_8bit { avcodec_pix_fmt_8bit },
-        avcodec_pix_fmt_10bit { avcodec_pix_fmt_10bit },
-        init_avcodec_hardware_input_buffer { init_avcodec_hardware_input_buffer_function } {
-      dev_type = map_base_dev_type(avcodec_base_dev_type);
-      pix_fmt_8bit = map_pix_fmt(avcodec_pix_fmt_8bit);
-      pix_fmt_10bit = map_pix_fmt(avcodec_pix_fmt_10bit);
-    }
-
-    AVHWDeviceType avcodec_base_dev_type, avcodec_derived_dev_type;
-    AVPixelFormat avcodec_dev_pix_fmt;
-    AVPixelFormat avcodec_pix_fmt_8bit, avcodec_pix_fmt_10bit;
-
-    init_buffer_function_t init_avcodec_hardware_input_buffer;
-  };
-
-  struct encoder_platform_formats_nvenc: encoder_platform_formats_t {
-    encoder_platform_formats_nvenc(
-      const platf::mem_type_e &dev_type,
-      const platf::pix_fmt_e &pix_fmt_8bit,
-      const platf::pix_fmt_e &pix_fmt_10bit) {
-      encoder_platform_formats_t::dev_type = dev_type;
-      encoder_platform_formats_t::pix_fmt_8bit = pix_fmt_8bit;
-      encoder_platform_formats_t::pix_fmt_10bit = pix_fmt_10bit;
-    }
-  };
-
-  struct encoder_t {
-    std::string_view name;
-    enum flag_e {
-      PASSED,  // Is supported
-      REF_FRAMES_RESTRICT,  // Set maximum reference frames
-      CBR,  // Some encoders don't support CBR, if not supported --> attempt constant quantatication parameter instead
-      DYNAMIC_RANGE,  // hdr
-      VUI_PARAMETERS,  // AMD encoder with VAAPI doesn't add VUI parameters to SPS
-      MAX_FLAGS
-    };
-
-    static std::string_view
-    from_flag(flag_e flag) {
-#define _CONVERT(x) \
-  case flag_e::x:   \
-    return #x##sv
-      switch (flag) {
-        _CONVERT(PASSED);
-        _CONVERT(REF_FRAMES_RESTRICT);
-        _CONVERT(CBR);
-        _CONVERT(DYNAMIC_RANGE);
-        _CONVERT(VUI_PARAMETERS);
-        _CONVERT(MAX_FLAGS);
-      }
-#undef _CONVERT
-
-      return "unknown"sv;
-    }
-
-    struct option_t {
-      KITTY_DEFAULT_CONSTR_MOVE(option_t)
-      option_t(const option_t &) = default;
-
-      std::string name;
-      std::variant<int, int *, std::optional<int> *, std::function<int()>, std::string, std::string *> value;
-
-      option_t(std::string &&name, decltype(value) &&value):
-          name { std::move(name) }, value { std::move(value) } {}
-    };
-
-    const std::unique_ptr<const encoder_platform_formats_t> platform_formats;
-
-    struct {
-      std::vector<option_t> common_options;
-      std::vector<option_t> sdr_options;
-      std::vector<option_t> hdr_options;
-      std::vector<option_t> fallback_options;
-
-      // QP option to set in the case that CBR/VBR is not supported
-      // by the encoder. If CBR/VBR is guaranteed to be supported,
-      // don't specify this option to avoid wasteful encoder probing.
-      std::optional<option_t> qp;
-
-      std::string name;
-      std::bitset<MAX_FLAGS> capabilities;
-
-      bool
-      operator[](flag_e flag) const {
-        return capabilities[(std::size_t) flag];
-      }
-
-      std::bitset<MAX_FLAGS>::reference
-      operator[](flag_e flag) {
-        return capabilities[(std::size_t) flag];
-      }
-    } av1, hevc, h264;
-
-    uint32_t flags;
-  };
-
-  struct encode_session_t {
-    virtual ~encode_session_t() = default;
-
-    virtual int
-    convert(platf::img_t &img) = 0;
-
-    virtual void
-    request_idr_frame() = 0;
-
-    virtual void
-    request_normal_frame() = 0;
-
-    virtual void
-    invalidate_ref_frames(int64_t first_frame, int64_t last_frame) = 0;
-  };
-
   class avcodec_encode_session_t: public encode_session_t {
   public:
     avcodec_encode_session_t() = default;
@@ -586,7 +443,7 @@ namespace video {
   auto capture_thread_sync = safe::make_shared<capture_thread_sync_ctx_t>(start_capture_sync, end_capture_sync);
 
 #ifdef _WIN32
-  static encoder_t nvenc {
+  encoder_t nvenc {
     "nvenc"sv,
     std::make_unique<encoder_platform_formats_nvenc>(
       platf::mem_type_e::dxgi,
@@ -630,7 +487,7 @@ namespace video {
     PARALLEL_ENCODING | REF_FRAMES_INVALIDATION  // flags
   };
 #elif !defined(__APPLE__)
-  static encoder_t nvenc {
+  encoder_t nvenc {
     "nvenc"sv,
     std::make_unique<encoder_platform_formats_avcodec>(
   #ifdef _WIN32
@@ -718,7 +575,7 @@ namespace video {
 #endif
 
 #ifdef _WIN32
-  static encoder_t quicksync {
+  encoder_t quicksync {
     "quicksync"sv,
     std::make_unique<encoder_platform_formats_avcodec>(
       AV_HWDEVICE_TYPE_D3D11VA, AV_HWDEVICE_TYPE_QSV,
@@ -763,7 +620,9 @@ namespace video {
         { "profile"s, (int) qsv::profile_hevc_e::main_10 },
       },
       // Fallback options
-      {},
+      {
+        { "low_power"s, []() { return config::video.qsv.qsv_slow_hevc ? 0 : 1; } },
+      },
       std::nullopt,  // QP rate control fallback
       "hevc_qsv"s,
     },
@@ -797,7 +656,7 @@ namespace video {
     PARALLEL_ENCODING | CBR_WITH_VBR | RELAXED_COMPLIANCE | NO_RC_BUF_LIMIT
   };
 
-  static encoder_t amdvce {
+  encoder_t amdvce {
     "amdvce"sv,
     std::make_unique<encoder_platform_formats_avcodec>(
       AV_HWDEVICE_TYPE_D3D11VA, AV_HWDEVICE_TYPE_NONE,
@@ -813,6 +672,7 @@ namespace video {
         { "quality"s, &config::video.amd.amd_quality_av1 },
         { "rc"s, &config::video.amd.amd_rc_av1 },
         { "usage"s, &config::video.amd.amd_usage_av1 },
+        { "enforce_hrd"s, &config::video.amd.amd_enforce_hrd },
       },
       {},  // SDR-specific options
       {},  // HDR-specific options
@@ -834,6 +694,7 @@ namespace video {
         { "rc"s, &config::video.amd.amd_rc_hevc },
         { "usage"s, &config::video.amd.amd_usage_hevc },
         { "vbaq"s, &config::video.amd.amd_vbaq },
+        { "enforce_hrd"s, &config::video.amd.amd_enforce_hrd },
       },
       {},  // SDR-specific options
       {},  // HDR-specific options
@@ -853,6 +714,7 @@ namespace video {
         { "rc"s, &config::video.amd.amd_rc_h264 },
         { "usage"s, &config::video.amd.amd_usage_h264 },
         { "vbaq"s, &config::video.amd.amd_vbaq },
+        { "enforce_hrd"s, &config::video.amd.amd_enforce_hrd },
       },
       // SDR-specific options
       {},
@@ -869,7 +731,7 @@ namespace video {
   };
 #endif
 
-  static encoder_t software {
+  encoder_t software {
     "software"sv,
     std::make_unique<encoder_platform_formats_avcodec>(
       AV_HWDEVICE_TYPE_NONE, AV_HWDEVICE_TYPE_NONE,
@@ -934,7 +796,7 @@ namespace video {
   };
 
 #ifdef __linux__
-  static encoder_t vaapi {
+  encoder_t vaapi {
     "vaapi"sv,
     std::make_unique<encoder_platform_formats_avcodec>(
       AV_HWDEVICE_TYPE_VAAPI, AV_HWDEVICE_TYPE_NONE,
@@ -1002,7 +864,7 @@ namespace video {
 #endif
 
 #ifdef __APPLE__
-  static encoder_t videotoolbox {
+  encoder_t videotoolbox {
     "videotoolbox"sv,
     std::make_unique<encoder_platform_formats_avcodec>(
       AV_HWDEVICE_TYPE_VIDEOTOOLBOX, AV_HWDEVICE_TYPE_NONE,
@@ -2719,7 +2581,13 @@ namespace video {
     }
 
     if (chosen_encoder == nullptr) {
-      BOOST_LOG(fatal) << "Couldn't find any working encoder"sv;
+      BOOST_LOG(fatal) << "Unable to find display or encoder during startup."sv;
+      if (!config::video.adapter_name.empty() || !config::video.output_name.empty()) {
+        BOOST_LOG(fatal) << "Please ensure your manually chosen GPU and monitor are connected and powered on."sv;
+      }
+      else {
+        BOOST_LOG(fatal) << "Please check that a display is connected and powered on."sv;
+      }
       return -1;
     }
 

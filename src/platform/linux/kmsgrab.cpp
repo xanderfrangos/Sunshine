@@ -13,9 +13,10 @@
 #include <xf86drmMode.h>
 
 #include <filesystem>
+#include <thread>
 
+#include "src/config.h"
 #include "src/logging.h"
-#include "src/main.h"
 #include "src/platform/common.h"
 #include "src/round_robin.h"
 #include "src/utility.h"
@@ -108,6 +109,7 @@ namespace platf {
     using obj_prop_t = util::safe_ptr<drmModeObjectProperties, drmModeFreeObjectProperties>;
     using prop_t = util::safe_ptr<drmModePropertyRes, drmModeFreeProperty>;
     using prop_blob_t = util::safe_ptr<drmModePropertyBlobRes, drmModeFreePropertyBlob>;
+    using version_t = util::safe_ptr<drmVersion, drmFreeVersion>;
 
     using conn_type_count_t = std::map<std::uint32_t, std::uint32_t>;
 
@@ -145,9 +147,12 @@ namespace platf {
     };
 
     struct monitor_t {
+      // Connector attributes
       std::uint32_t type;
-
       std::uint32_t index;
+
+      // Monitor index in the global list
+      std::uint32_t monitor_index;
 
       platf::touch_port_t viewport;
     };
@@ -294,6 +299,9 @@ namespace platf {
           return -1;
         }
 
+        version_t ver { drmGetVersion(fd.el) };
+        BOOST_LOG(info) << path << " -> "sv << ((ver && ver->name) ? ver->name : "UNKNOWN");
+
         // Open the render node for this card to share with libva.
         // If it fails, we'll just share the primary node instead.
         char *rendernode_path = drmGetRenderDeviceNameFromFd(fd.el);
@@ -312,12 +320,21 @@ namespace platf {
         }
 
         if (drmSetClientCap(fd.el, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1)) {
-          BOOST_LOG(error) << "Couldn't expose some/all drm planes for card: "sv << path;
+          BOOST_LOG(error) << "GPU driver doesn't support universal planes: "sv << path;
           return -1;
         }
 
         if (drmSetClientCap(fd.el, DRM_CLIENT_CAP_ATOMIC, 1)) {
-          BOOST_LOG(warning) << "Couldn't expose some properties for card: "sv << path;
+          BOOST_LOG(warning) << "GPU driver doesn't support atomic mode-setting: "sv << path;
+#if defined(SUNSHINE_BUILD_X11)
+          // We won't be able to capture the mouse cursor with KMS on non-atomic drivers,
+          // so fall back to X11 if it's available and the user didn't explicitly force KMS.
+          if (window_system == window_system_e::X11 && config::video.capture != "kms") {
+            BOOST_LOG(info) << "Avoiding KMS capture under X11 due to lack of atomic mode-setting"sv;
+            return -1;
+          }
+#endif
+          BOOST_LOG(warning) << "Cursor capture may fail without atomic mode-setting support!"sv;
         }
 
         plane_res.reset(drmModeGetPlaneResources(fd.el));
@@ -359,6 +376,12 @@ namespace platf {
       res_t
       res() {
         return drmModeGetResources(fd.el);
+      }
+
+      bool
+      is_nvidia() {
+        version_t ver { drmGetVersion(fd.el) };
+        return ver && ver->name && strncmp(ver->name, "nvidia-drm", 10) == 0;
       }
 
       bool
@@ -601,6 +624,15 @@ namespace platf {
             continue;
           }
 
+          // Skip non-Nvidia cards if we're looking for CUDA devices
+          // unless NVENC is selected manually by the user
+          if (mem_type == mem_type_e::cuda && !card.is_nvidia()) {
+            BOOST_LOG(debug) << file << " is not a CUDA device"sv;
+            if (config::video.encoder != "nvenc") {
+              continue;
+            }
+          }
+
           auto end = std::end(card);
           for (auto plane = std::begin(card); plane != end; ++plane) {
             // Skip unused planes
@@ -624,8 +656,7 @@ namespace platf {
             }
 
             if (!fb->handles[0]) {
-              BOOST_LOG(error)
-                << "Couldn't get handle for DRM Framebuffer ["sv << plane->fb_id << "]: Possibly not permitted: do [sudo setcap cap_sys_admin+p sunshine]"sv;
+              BOOST_LOG(error) << "Couldn't get handle for DRM Framebuffer ["sv << plane->fb_id << "]: Probably not permitted"sv;
               return -1;
             }
 
@@ -893,12 +924,14 @@ namespace platf {
 
         if (!prop_crtc_w || !prop_crtc_h || !prop_crtc_x || !prop_crtc_y) {
           BOOST_LOG(error) << "Cursor plane is missing required plane CRTC properties!"sv;
+          BOOST_LOG(error) << "Atomic mode-setting must be enabled to capture the cursor!"sv;
           cursor_plane_id = -1;
           captured_cursor.visible = false;
           return;
         }
         if (!prop_src_x || !prop_src_y || !prop_src_w || !prop_src_h) {
           BOOST_LOG(error) << "Cursor plane is missing required plane SRC properties!"sv;
+          BOOST_LOG(error) << "Atomic mode-setting must be enabled to capture the cursor!"sv;
           cursor_plane_id = -1;
           captured_cursor.visible = false;
           return;
@@ -1036,7 +1069,7 @@ namespace platf {
       }
 
       inline capture_e
-      refresh(file_t *file, egl::surface_descriptor_t *sd) {
+      refresh(file_t *file, egl::surface_descriptor_t *sd, std::optional<std::chrono::steady_clock::time_point> &frame_timestamp) {
         // Check for a change in HDR metadata
         if (connector_id) {
           auto connector_props = card.connector_props(*connector_id);
@@ -1047,6 +1080,7 @@ namespace platf {
         }
 
         plane_t plane = drmModeGetPlane(card.fd.el, plane_id);
+        frame_timestamp = std::chrono::steady_clock::now();
 
         auto fb = card.fb(plane.get());
         if (!fb) {
@@ -1056,8 +1090,7 @@ namespace platf {
         }
 
         if (!fb->handles[0]) {
-          BOOST_LOG(error)
-            << "Couldn't get handle for DRM Framebuffer ["sv << plane->fb_id << "]: Possibly not permitted: do [sudo setcap cap_sys_admin+p sunshine]"sv;
+          BOOST_LOG(error) << "Couldn't get handle for DRM Framebuffer ["sv << plane->fb_id << "]: Probably not permitted"sv;
           return capture_e::error;
         }
 
@@ -1160,17 +1193,22 @@ namespace platf {
       capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override {
         auto next_frame = std::chrono::steady_clock::now();
 
+        sleep_overshoot_tracker.reset();
+
         while (true) {
           auto now = std::chrono::steady_clock::now();
 
           if (next_frame > now) {
-            std::this_thread::sleep_for((next_frame - now) / 3 * 2);
+            std::this_thread::sleep_for(next_frame - now);
           }
-          while (next_frame > now) {
-            std::this_thread::sleep_for(1ns);
-            now = std::chrono::steady_clock::now();
+          now = std::chrono::steady_clock::now();
+          std::chrono::nanoseconds overshoot_ns = now - next_frame;
+          log_sleep_overshoot(overshoot_ns);
+
+          next_frame += delay;
+          if (next_frame < now) {  // some major slowdown happened; we couldn't keep up
+            next_frame = now + delay;
           }
-          next_frame = now + delay;
 
           std::shared_ptr<platf::img_t> img_out;
           auto status = snapshot(pull_free_image_cb, img_out, 1000ms, *cursor);
@@ -1237,8 +1275,13 @@ namespace platf {
         auto delta_width = std::min<uint32_t>(captured_cursor.src_w, std::max<int32_t>(0, screen_width - cursor_x)) - cursor_delta_x;
         for (auto y = 0; y < delta_height; ++y) {
           // Offset into the cursor image to skip drawing the parts of the cursor image that are off screen
-          auto cursor_begin = (uint32_t *) &captured_cursor.pixels[((y + cursor_delta_y) * captured_cursor.src_w + cursor_delta_x) * 4];
-          auto cursor_end = (uint32_t *) &captured_cursor.pixels[((y + cursor_delta_y) * captured_cursor.src_w + delta_width + cursor_delta_x) * 4];
+          //
+          // NB: We must access the elements via the data() function because cursor_end may point to the
+          // the first element beyond the valid range of the vector. Using vector's [] operator in that
+          // manner is undefined behavior (and triggers errors when using debug libc++), while doing the
+          // same with an array is fine.
+          auto cursor_begin = (uint32_t *) &captured_cursor.pixels.data()[((y + cursor_delta_y) * captured_cursor.src_w + cursor_delta_x) * 4];
+          auto cursor_end = (uint32_t *) &captured_cursor.pixels.data()[((y + cursor_delta_y) * captured_cursor.src_w + delta_width + cursor_delta_x) * 4];
 
           auto pixels_begin = &pixels[(y + cursor_y) * (img.row_pitch / img.pixel_pitch) + cursor_x];
 
@@ -1266,7 +1309,8 @@ namespace platf {
 
         egl::surface_descriptor_t sd;
 
-        auto status = refresh(fb_fd, &sd);
+        std::optional<std::chrono::steady_clock::time_point> frame_timestamp;
+        auto status = refresh(fb_fd, &sd, frame_timestamp);
         if (status != capture_e::ok) {
           return status;
         }
@@ -1292,6 +1336,8 @@ namespace platf {
         }
 
         gl::ctx.GetTextureSubImage(rgb->tex[0], 0, img_offset_x, img_offset_y, 0, width, height, 1, GL_BGRA, GL_UNSIGNED_BYTE, img_out->height * img_out->row_pitch, img_out->data);
+
+        img_out->frame_timestamp = frame_timestamp;
 
         if (cursor && captured_cursor.visible) {
           blend_cursor(*img_out);
@@ -1371,17 +1417,22 @@ namespace platf {
       capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) {
         auto next_frame = std::chrono::steady_clock::now();
 
+        sleep_overshoot_tracker.reset();
+
         while (true) {
           auto now = std::chrono::steady_clock::now();
 
           if (next_frame > now) {
-            std::this_thread::sleep_for((next_frame - now) / 3 * 2);
+            std::this_thread::sleep_for(next_frame - now);
           }
-          while (next_frame > now) {
-            std::this_thread::sleep_for(1ns);
-            now = std::chrono::steady_clock::now();
+          now = std::chrono::steady_clock::now();
+          std::chrono::nanoseconds overshoot_ns = now - next_frame;
+          log_sleep_overshoot(overshoot_ns);
+
+          next_frame += delay;
+          if (next_frame < now) {  // some major slowdown happened; we couldn't keep up
+            next_frame = now + delay;
           }
-          next_frame = now + delay;
 
           std::shared_ptr<platf::img_t> img_out;
           auto status = snapshot(pull_free_image_cb, img_out, 1000ms, *cursor);
@@ -1419,7 +1470,7 @@ namespace platf {
         auto img = (egl::img_descriptor_t *) img_out.get();
         img->reset();
 
-        auto status = refresh(fb_fd, &img->sd);
+        auto status = refresh(fb_fd, &img->sd, img->frame_timestamp);
         if (status != capture_e::ok) {
           return status;
         }
@@ -1516,10 +1567,10 @@ namespace platf {
   correlate_to_wayland(std::vector<kms::card_descriptor_t> &cds) {
     auto monitors = wl::monitors();
 
+    BOOST_LOG(info) << "-------- Start of KMS monitor list --------"sv;
+
     for (auto &monitor : monitors) {
       std::string_view name = monitor->name;
-
-      BOOST_LOG(info) << name << ": "sv << monitor->description;
 
       // Try to convert names in the format:
       // {type}-{index}
@@ -1553,6 +1604,7 @@ namespace platf {
                 << monitor->viewport.width << 'x' << monitor->viewport.height;
             }
 
+            BOOST_LOG(info) << "Monitor " << monitor_descriptor.monitor_index << " is "sv << name << ": "sv << monitor->description;
             goto break_for_loop;
           }
         }
@@ -1561,11 +1613,13 @@ namespace platf {
 
       BOOST_LOG(verbose) << "Reduced to name: "sv << name << ": "sv << index;
     }
+
+    BOOST_LOG(info) << "--------- End of KMS monitor list ---------"sv;
   }
 
   // A list of names of displays accepted as display_name
   std::vector<std::string>
-  kms_display_names() {
+  kms_display_names(mem_type_e hwdevice_type) {
     int count = 0;
 
     if (!fs::exists("/dev/dri")) {
@@ -1597,6 +1651,18 @@ namespace platf {
         continue;
       }
 
+      // Skip non-Nvidia cards if we're looking for CUDA devices
+      // unless NVENC is selected manually by the user
+      if (hwdevice_type == mem_type_e::cuda && !card.is_nvidia()) {
+        BOOST_LOG(debug) << file << " is not a CUDA device"sv;
+        if (config::video.encoder == "nvenc") {
+          BOOST_LOG(warning) << "Using NVENC with your display connected to a different GPU may not work properly!"sv;
+        }
+        else {
+          continue;
+        }
+      }
+
       auto crtc_to_monitor = kms::map_crtc_to_monitor(card.monitors(conn_type_count));
 
       auto end = std::end(card);
@@ -1617,8 +1683,9 @@ namespace platf {
         }
 
         if (!fb->handles[0]) {
-          BOOST_LOG(error)
-            << "Couldn't get handle for DRM Framebuffer ["sv << plane->fb_id << "]: Possibly not permitted: do [sudo setcap cap_sys_admin+p sunshine]"sv;
+          BOOST_LOG(error) << "Couldn't get handle for DRM Framebuffer ["sv << plane->fb_id << "]: Probably not permitted"sv;
+          BOOST_LOG((window_system != window_system_e::X11 || config::video.capture == "kms") ? fatal : error)
+            << "You must run [sudo setcap cap_sys_admin+p $(readlink -f $(which sunshine))] for KMS display capture to work!"sv;
           break;
         }
 
@@ -1637,6 +1704,7 @@ namespace platf {
             (int) crtc->width,
             (int) crtc->height,
           };
+          it->second.monitor_index = count;
         }
 
         kms::env_width = std::max(kms::env_width, (int) (crtc->x + crtc->width));

@@ -6,6 +6,9 @@ enable_language(RC)
 set(CMAKE_RC_COMPILER windres)
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static")
 
+# gcc complains about misleading indentation in some mingw includes
+list(APPEND SUNSHINE_COMPILE_OPTIONS -Wno-misleading-indentation)
+
 # curl
 add_definitions(-DCURL_STATICLIB)
 include_directories(SYSTEM ${CURL_STATIC_INCLUDE_DIRS})
@@ -26,10 +29,6 @@ file(GLOB NVPREFS_FILES CONFIGURE_DEPENDS
 
 # vigem
 include_directories(SYSTEM "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/include")
-set_source_files_properties("${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/src/ViGEmClient.cpp"
-        PROPERTIES COMPILE_DEFINITIONS "UNICODE=1;ERROR_INVALID_DEVICE_OBJECT_PARAMETER=650")
-set_source_files_properties("${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/src/ViGEmClient.cpp"
-        PROPERTIES COMPILE_FLAGS "-Wno-unknown-pragmas -Wno-misleading-indentation -Wno-class-memaccess")
 
 # sunshine icon
 if(NOT DEFINED SUNSHINE_ICON_PATH)
@@ -75,6 +74,7 @@ list(PREPEND PLATFORM_LIBRARIES
         avrt
         iphlpapi
         shlwapi
+        PkgConfig::NLOHMANN_JSON
         ${CURL_STATIC_LIBRARIES})
 
 if(SUNSHINE_ENABLE_TRAY)

@@ -8,6 +8,7 @@
 
 #include <filesystem>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <boost/algorithm/string.hpp>
@@ -23,12 +24,14 @@
 #include "config.h"
 #include "crypto.h"
 #include "logging.h"
-#include "main.h"
 #include "platform/common.h"
 #include "system_tray.h"
 #include "utility.h"
 
 #ifdef _WIN32
+  // from_utf8() string conversion function
+  #include "platform/windows/misc.h"
+
   // _SH constants for _wfsopen()
   #include <share.h>
 #endif
@@ -187,8 +190,7 @@ namespace proc {
 #ifdef _WIN32
       // fopen() interprets the filename as an ANSI string on Windows, so we must convert it
       // to UTF-16 and use the wchar_t variants for proper Unicode log file path support.
-      std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>, wchar_t> converter;
-      auto woutput = converter.from_bytes(_app.output);
+      auto woutput = platf::from_utf8(_app.output);
 
       // Use _SH_DENYNO to allow us to open this log file again for writing even if it is
       // still open from a previous execution. This is required to handle the case of a
@@ -662,6 +664,12 @@ namespace proc {
 
         if (working_dir) {
           ctx.working_dir = parse_env_val(this_env, *working_dir);
+#ifdef _WIN32
+          // The working directory, unlike the command itself, should not be quoted
+          // when it contains spaces. Unlike POSIX, Windows forbids quotes in paths,
+          // so we can safely strip them all out here to avoid confusing the user.
+          boost::erase_all(ctx.working_dir, "\"");
+#endif
         }
 
         if (image_path) {

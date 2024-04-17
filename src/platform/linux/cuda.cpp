@@ -3,10 +3,9 @@
  * @brief todo
  */
 #include <bitset>
-
 #include <fcntl.h>
-
 #include <filesystem>
+#include <thread>
 
 #include <NvFBC.h>
 #include <ffnvcodec/dynlink_loader.h>
@@ -20,7 +19,6 @@ extern "C" {
 #include "cuda.h"
 #include "graphics.h"
 #include "src/logging.h"
-#include "src/main.h"
 #include "src/utility.h"
 #include "src/video.h"
 #include "wayland.h"
@@ -249,29 +247,38 @@ namespace cuda {
 
     // There's no way to directly go from CUDA to a DRM device, so we'll
     // use sysfs to look up the DRM device name from the PCI ID.
-    char pci_bus_id[13];
-    CU_CHECK(cdf->cuDeviceGetPCIBusId(pci_bus_id, sizeof(pci_bus_id), device), "Couldn't get CUDA device PCI bus ID");
-    BOOST_LOG(debug) << "Found CUDA device with PCI bus ID: "sv << pci_bus_id;
+    std::array<char, 13> pci_bus_id;
+    CU_CHECK(cdf->cuDeviceGetPCIBusId(pci_bus_id.data(), pci_bus_id.size(), device), "Couldn't get CUDA device PCI bus ID");
+    BOOST_LOG(debug) << "Found CUDA device with PCI bus ID: "sv << pci_bus_id.data();
+
+    // Linux uses lowercase hexadecimal while CUDA uses uppercase
+    std::transform(pci_bus_id.begin(), pci_bus_id.end(), pci_bus_id.begin(),
+      [](char c) { return std::tolower(c); });
 
     // Look for the name of the primary node in sysfs
-    char sysfs_path[PATH_MAX];
-    std::snprintf(sysfs_path, sizeof(sysfs_path), "/sys/bus/pci/devices/%s/drm", pci_bus_id);
-    fs::path sysfs_dir { sysfs_path };
-    for (auto &entry : fs::directory_iterator { sysfs_dir }) {
-      auto file = entry.path().filename();
-      auto filestring = file.generic_u8string();
-      if (std::string_view { filestring }.substr(0, 4) != "card"sv) {
-        continue;
+    try {
+      char sysfs_path[PATH_MAX];
+      std::snprintf(sysfs_path, sizeof(sysfs_path), "/sys/bus/pci/devices/%s/drm", pci_bus_id.data());
+      fs::path sysfs_dir { sysfs_path };
+      for (auto &entry : fs::directory_iterator { sysfs_dir }) {
+        auto file = entry.path().filename();
+        auto filestring = file.generic_u8string();
+        if (std::string_view { filestring }.substr(0, 4) != "card"sv) {
+          continue;
+        }
+
+        BOOST_LOG(debug) << "Found DRM primary node: "sv << filestring;
+
+        fs::path dri_path { "/dev/dri"sv };
+        auto device_path = dri_path / file;
+        return open(device_path.c_str(), O_RDWR);
       }
-
-      BOOST_LOG(debug) << "Found DRM primary node: "sv << filestring;
-
-      fs::path dri_path { "/dev/dri"sv };
-      auto device_path = dri_path / file;
-      return open(device_path.c_str(), O_RDWR);
+    }
+    catch (const std::filesystem::filesystem_error &err) {
+      BOOST_LOG(error) << "Failed to read sysfs: "sv << err.what();
     }
 
-    BOOST_LOG(error) << "Unable to find DRM device with PCI bus ID: "sv << pci_bus_id;
+    BOOST_LOG(error) << "Unable to find DRM device with PCI bus ID: "sv << pci_bus_id.data();
     return -1;
   }
 
@@ -793,16 +800,21 @@ namespace cuda {
           handle.reset();
         });
 
+        sleep_overshoot_tracker.reset();
+
         while (true) {
           auto now = std::chrono::steady_clock::now();
           if (next_frame > now) {
-            std::this_thread::sleep_for((next_frame - now) / 3 * 2);
+            std::this_thread::sleep_for(next_frame - now);
           }
-          while (next_frame > now) {
-            std::this_thread::sleep_for(1ns);
-            now = std::chrono::steady_clock::now();
+          now = std::chrono::steady_clock::now();
+          std::chrono::nanoseconds overshoot_ns = now - next_frame;
+          log_sleep_overshoot(overshoot_ns);
+
+          next_frame += delay;
+          if (next_frame < now) {  // some major slowdown happened; we couldn't keep up
+            next_frame = now + delay;
           }
-          next_frame = now + delay;
 
           std::shared_ptr<platf::img_t> img_out;
           auto status = snapshot(pull_free_image_cb, img_out, 150ms, *cursor);

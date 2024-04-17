@@ -30,9 +30,9 @@
 #include "confighttp.h"
 #include "crypto.h"
 #include "file_handler.h"
+#include "globals.h"
 #include "httpcommon.h"
 #include "logging.h"
-#include "main.h"
 #include "network.h"
 #include "nvhttp.h"
 #include "platform/common.h"
@@ -551,6 +551,24 @@ namespace confighttp {
   }
 
   void
+  getLocale(resp_https_t response, req_https_t request) {
+    // we need to return the locale whether authenticated or not
+
+    print_req(request);
+
+    pt::ptree outputTree;
+    auto g = util::fail_guard([&]() {
+      std::ostringstream data;
+
+      pt::write_json(data, outputTree);
+      response->write(data.str());
+    });
+
+    outputTree.put("status", "true");
+    outputTree.put("locale", config::sunshine.locale);
+  }
+
+  void
   saveConfig(resp_https_t response, req_https_t request) {
     if (!authenticate(response, request)) return;
 
@@ -797,6 +815,7 @@ namespace confighttp {
     server.resource["^/api/apps$"]["POST"] = saveApp;
     server.resource["^/api/config$"]["GET"] = getConfig;
     server.resource["^/api/config$"]["POST"] = saveConfig;
+    server.resource["^/api/configLocale$"]["GET"] = getLocale;
     server.resource["^/api/restart$"]["POST"] = restart;
     server.resource["^/api/password$"]["POST"] = savePassword;
     server.resource["^/api/apps/([0-9]+)$"]["DELETE"] = deleteApp;

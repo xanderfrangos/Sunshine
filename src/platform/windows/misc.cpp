@@ -2,7 +2,6 @@
  * @file src/platform/windows/misc.cpp
  * @brief todo
  */
-#include <codecvt>
 #include <csignal>
 #include <filesystem>
 #include <iomanip>
@@ -35,8 +34,11 @@
 #define NTDDI_VERSION NTDDI_WIN10
 #include <Shlwapi.h>
 
+#include "misc.h"
+
+#include "src/entry_handler.h"
+#include "src/globals.h"
 #include "src/logging.h"
-#include "src/main.h"
 #include "src/platform/common.h"
 #include "src/utility.h"
 #include <iterator>
@@ -64,8 +66,6 @@ namespace bp = boost::process;
 using namespace std::literals;
 namespace platf {
   using adapteraddrs_t = util::c_ptr<IP_ADAPTER_ADDRESSES>;
-
-  static std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>, wchar_t> converter;
 
   bool enabled_mouse_keys = false;
   MOUSEKEYS previous_mouse_keys_state;
@@ -296,7 +296,7 @@ namespace platf {
     // Parse the environment block and populate env
     for (auto c = (PWCHAR) env_block; *c != UNICODE_NULL; c += wcslen(c) + 1) {
       // Environment variable entries end with a null-terminator, so std::wstring() will get an entire entry.
-      std::string env_tuple = converter.to_bytes(std::wstring { c });
+      std::string env_tuple = to_utf8(std::wstring { c });
       std::string env_name = env_tuple.substr(0, env_tuple.find('='));
       std::string env_val = env_tuple.substr(env_tuple.find('=') + 1);
 
@@ -370,7 +370,7 @@ namespace platf {
     for (const auto &entry : env) {
       auto name = entry.get_name();
       auto value = entry.to_string();
-      size += converter.from_bytes(name).length() + 1 /* L'=' */ + converter.from_bytes(value).length() + 1 /* L'\0' */;
+      size += from_utf8(name).length() + 1 /* L'=' */ + from_utf8(value).length() + 1 /* L'\0' */;
     }
 
     size += 1 /* L'\0' */;
@@ -382,9 +382,9 @@ namespace platf {
       auto value = entry.to_string();
 
       // Construct the NAME=VAL\0 string
-      append_string_to_environment_block(env_block, offset, converter.from_bytes(name));
+      append_string_to_environment_block(env_block, offset, from_utf8(name));
       env_block[offset++] = L'=';
-      append_string_to_environment_block(env_block, offset, converter.from_bytes(value));
+      append_string_to_environment_block(env_block, offset, from_utf8(value));
       env_block[offset++] = L'\0';
     }
 
@@ -489,7 +489,7 @@ namespace platf {
       auto winerror = GetLastError();
       // Log the failure of reverting to self and its error code
       BOOST_LOG(fatal) << "Failed to revert to self after impersonation: "sv << winerror;
-      std::abort();
+      DebugBreak();
     }
 
     return ec;
@@ -615,23 +615,85 @@ namespace platf {
   }
 
   /**
+   * @brief This function quotes/escapes an argument according to the Windows parsing convention.
+   * @param argument The raw argument to process.
+   * @return An argument string suitable for use by CreateProcess().
+   */
+  std::wstring
+  escape_argument(const std::wstring &argument) {
+    // If there are no characters requiring quoting/escaping, we're done
+    if (argument.find_first_of(L" \t\n\v\"") == argument.npos) {
+      return argument;
+    }
+
+    // The algorithm implemented here comes from a MSDN blog post:
+    // https://web.archive.org/web/20120201194949/http://blogs.msdn.com/b/twistylittlepassagesallalike/archive/2011/04/23/everyone-quotes-arguments-the-wrong-way.aspx
+    std::wstring escaped_arg;
+    escaped_arg.push_back(L'"');
+    for (auto it = argument.begin();; it++) {
+      auto backslash_count = 0U;
+      while (it != argument.end() && *it == L'\\') {
+        it++;
+        backslash_count++;
+      }
+
+      if (it == argument.end()) {
+        escaped_arg.append(backslash_count * 2, L'\\');
+        break;
+      }
+      else if (*it == L'"') {
+        escaped_arg.append(backslash_count * 2 + 1, L'\\');
+      }
+      else {
+        escaped_arg.append(backslash_count, L'\\');
+      }
+
+      escaped_arg.push_back(*it);
+    }
+    escaped_arg.push_back(L'"');
+    return escaped_arg;
+  }
+
+  /**
+   * @brief This function escapes an argument according to cmd's parsing convention.
+   * @param argument An argument already escaped by `escape_argument()`.
+   * @return An argument string suitable for use by cmd.exe.
+   */
+  std::wstring
+  escape_argument_for_cmd(const std::wstring &argument) {
+    // Start with the original string and modify from there
+    std::wstring escaped_arg = argument;
+
+    // Look for the next cmd metacharacter
+    size_t match_pos = 0;
+    while ((match_pos = escaped_arg.find_first_of(L"()%!^\"<>&|", match_pos)) != std::wstring::npos) {
+      // Insert an escape character and skip past the match
+      escaped_arg.insert(match_pos, 1, L'^');
+      match_pos += 2;
+    }
+
+    return escaped_arg;
+  }
+
+  /**
    * @brief This function resolves the given raw command into a proper command string for CreateProcess().
    * @details This converts URLs and non-executable file paths into a runnable command like ShellExecute().
    * @param raw_cmd The raw command provided by the user.
    * @param working_dir The working directory for the new process.
    * @param token The user token currently being impersonated or `NULL` if running as ourselves.
+   * @param creation_flags The creation flags for CreateProcess(), which may be modified by this function.
    * @return A command string suitable for use by CreateProcess().
    */
   std::wstring
-  resolve_command_string(const std::string &raw_cmd, const std::wstring &working_dir, HANDLE token) {
-    std::wstring raw_cmd_w = converter.from_bytes(raw_cmd);
+  resolve_command_string(const std::string &raw_cmd, const std::wstring &working_dir, HANDLE token, DWORD &creation_flags) {
+    std::wstring raw_cmd_w = from_utf8(raw_cmd);
 
     // First, convert the given command into parts so we can get the executable/file/URL without parameters
     auto raw_cmd_parts = boost::program_options::split_winmain(raw_cmd_w);
     if (raw_cmd_parts.empty()) {
       // This is highly unexpected, but we'll just return the raw string and hope for the best.
       BOOST_LOG(warning) << "Failed to split command string: "sv << raw_cmd;
-      return converter.from_bytes(raw_cmd);
+      return from_utf8(raw_cmd);
     }
 
     auto raw_target = raw_cmd_parts.at(0);
@@ -645,7 +707,7 @@ namespace platf {
       res = UrlGetPartW(raw_target.c_str(), scheme.data(), &out_len, URL_PART_SCHEME, 0);
       if (res != S_OK) {
         BOOST_LOG(warning) << "Failed to extract URL scheme from URL: "sv << raw_target << " ["sv << util::hex(res).to_string_view() << ']';
-        return converter.from_bytes(raw_cmd);
+        return from_utf8(raw_cmd);
       }
 
       // If the target is a URL, the class is found using the URL scheme (prior to and not including the ':')
@@ -657,7 +719,14 @@ namespace platf {
       if (extension == nullptr || *extension == 0) {
         // If the file has no extension, assume it's a command and allow CreateProcess()
         // to try to find it via PATH
-        return converter.from_bytes(raw_cmd);
+        return from_utf8(raw_cmd);
+      }
+      else if (boost::iequals(extension, L".exe")) {
+        // If the file has an .exe extension, we will bypass the resolution here and
+        // directly pass the unmodified command string to CreateProcess(). The argument
+        // escaping rules are subtly different between CreateProcess() and ShellExecute(),
+        // and we want to preserve backwards compatibility with older configs.
+        return from_utf8(raw_cmd);
       }
 
       // For regular files, the class is found using the file extension (including the dot)
@@ -665,6 +734,7 @@ namespace platf {
     }
 
     std::array<WCHAR, MAX_PATH> shell_command_string;
+    bool needs_cmd_escaping = false;
     {
       // Overriding these predefined keys affects process-wide state, so serialize all calls
       // to ensure the handle state is consistent while we perform the command query.
@@ -673,7 +743,7 @@ namespace platf {
 
       // Override HKEY_CLASSES_ROOT and HKEY_CURRENT_USER to ensure we query the correct class info
       if (!override_per_user_predefined_keys(token)) {
-        return converter.from_bytes(raw_cmd);
+        return from_utf8(raw_cmd);
       }
 
       // Find the command string for the specified class
@@ -688,7 +758,13 @@ namespace platf {
       // FIXME: Maybe we can improve this in the future.
       if (res == HRESULT_FROM_WIN32(ERROR_NO_ASSOCIATION)) {
         BOOST_LOG(warning) << "Using trampoline to handle target: "sv << raw_cmd;
-        std::wcscpy(shell_command_string.data(), L"cmd.exe /c start \"\" \"%1\" %*");
+        std::wcscpy(shell_command_string.data(), L"cmd.exe /c start \"\" /wait \"%1\" %*");
+        needs_cmd_escaping = true;
+
+        // We must suppress the console window that would otherwise appear when starting cmd.exe.
+        creation_flags &= ~CREATE_NEW_CONSOLE;
+        creation_flags |= CREATE_NO_WINDOW;
+
         res = S_OK;
       }
 
@@ -698,7 +774,7 @@ namespace platf {
 
     if (res != S_OK) {
       BOOST_LOG(warning) << "Failed to query command string for raw command: "sv << raw_cmd << " ["sv << util::hex(res).to_string_view() << ']';
-      return converter.from_bytes(raw_cmd);
+      return from_utf8(raw_cmd);
     }
 
     // Finally, construct the real command string that will be passed into CreateProcess().
@@ -752,10 +828,18 @@ namespace platf {
         // All arguments following the target
         case L'*':
           for (int i = 1; i < raw_cmd_parts.size(); i++) {
+            // Insert a space before arguments after the first one
             if (i > 1) {
               match_replacement += L' ';
             }
-            match_replacement += raw_cmd_parts.at(i);
+
+            // Argument escaping applies only to %*, not the single substitutions like %2
+            auto escaped_argument = escape_argument(raw_cmd_parts.at(i));
+            if (needs_cmd_escaping) {
+              // If we're using the cmd.exe trampoline, we'll need to add additional escaping
+              escaped_argument = escape_argument_for_cmd(escaped_argument);
+            }
+            match_replacement += escaped_argument;
           }
           break;
 
@@ -824,7 +908,7 @@ namespace platf {
    */
   bp::child
   run_command(bool elevated, bool interactive, const std::string &cmd, boost::filesystem::path &working_dir, const bp::environment &env, FILE *file, std::error_code &ec, bp::group *group) {
-    std::wstring start_dir = converter.from_bytes(working_dir.string());
+    std::wstring start_dir = from_utf8(working_dir.string());
     HANDLE job = group ? group->native_handle() : nullptr;
     STARTUPINFOEXW startup_info = create_startup_info(file, job ? &job : nullptr, ec);
     PROCESS_INFORMATION process_info;
@@ -848,6 +932,31 @@ namespace platf {
 
     // Create a new console for interactive processes and use no console for non-interactive processes
     creation_flags |= interactive ? CREATE_NEW_CONSOLE : CREATE_NO_WINDOW;
+
+    // Find the PATH variable in our environment block using a case-insensitive search
+    auto sunshine_wenv = boost::this_process::wenvironment();
+    std::wstring path_var_name { L"PATH" };
+    std::wstring old_path_val;
+    auto itr = std::find_if(sunshine_wenv.cbegin(), sunshine_wenv.cend(), [&](const auto &e) { return boost::iequals(e.get_name(), path_var_name); });
+    if (itr != sunshine_wenv.cend()) {
+      // Use the existing variable if it exists, since Boost treats these as case-sensitive.
+      path_var_name = itr->get_name();
+      old_path_val = sunshine_wenv[path_var_name].to_string();
+    }
+
+    // Temporarily prepend the specified working directory to PATH to ensure CreateProcess()
+    // will (preferentially) find binaries that reside in the working directory.
+    sunshine_wenv[path_var_name].assign(start_dir + L";" + old_path_val);
+
+    // Restore the old PATH value for our process when we're done here
+    auto restore_path = util::fail_guard([&]() {
+      if (old_path_val.empty()) {
+        sunshine_wenv[path_var_name].clear();
+      }
+      else {
+        sunshine_wenv[path_var_name].assign(old_path_val);
+      }
+    });
 
     BOOL ret;
     if (is_running_as_system()) {
@@ -873,7 +982,7 @@ namespace platf {
       // Open the process as the current user account, elevation is handled in the token itself.
       ec = impersonate_current_user(user_token, [&]() {
         std::wstring env_block = create_environment_block(cloned_env);
-        std::wstring wcmd = resolve_command_string(cmd, start_dir, user_token);
+        std::wstring wcmd = resolve_command_string(cmd, start_dir, user_token, creation_flags);
         ret = CreateProcessAsUserW(user_token,
           NULL,
           (LPWSTR) wcmd.c_str(),
@@ -907,7 +1016,7 @@ namespace platf {
       }
 
       std::wstring env_block = create_environment_block(cloned_env);
-      std::wstring wcmd = resolve_command_string(cmd, start_dir, NULL);
+      std::wstring wcmd = resolve_command_string(cmd, start_dir, NULL, creation_flags);
       ret = CreateProcessW(NULL,
         (LPWSTR) wcmd.c_str(),
         NULL,
@@ -1600,5 +1709,71 @@ namespace platf {
       return std::chrono::nanoseconds((int64_t) ((performance_counter1 - performance_counter2) * frequency / std::nano::den));
     }
     return {};
+  }
+
+  /**
+   * @brief Converts a UTF-8 string into a UTF-16 wide string.
+   * @param string The UTF-8 string.
+   * @return The converted UTF-16 wide string.
+   */
+  std::wstring
+  from_utf8(const std::string &string) {
+    // No conversion needed if the string is empty
+    if (string.empty()) {
+      return {};
+    }
+
+    // Get the output size required to store the string
+    auto output_size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, string.data(), string.size(), nullptr, 0);
+    if (output_size == 0) {
+      auto winerr = GetLastError();
+      BOOST_LOG(error) << "Failed to get UTF-16 buffer size: "sv << winerr;
+      return {};
+    }
+
+    // Perform the conversion
+    std::wstring output(output_size, L'\0');
+    output_size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, string.data(), string.size(), output.data(), output.size());
+    if (output_size == 0) {
+      auto winerr = GetLastError();
+      BOOST_LOG(error) << "Failed to convert string to UTF-16: "sv << winerr;
+      return {};
+    }
+
+    return output;
+  }
+
+  /**
+   * @brief Converts a UTF-16 wide string into a UTF-8 string.
+   * @param string The UTF-16 wide string.
+   * @return The converted UTF-8 string.
+   */
+  std::string
+  to_utf8(const std::wstring &string) {
+    // No conversion needed if the string is empty
+    if (string.empty()) {
+      return {};
+    }
+
+    // Get the output size required to store the string
+    auto output_size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, string.data(), string.size(),
+      nullptr, 0, nullptr, nullptr);
+    if (output_size == 0) {
+      auto winerr = GetLastError();
+      BOOST_LOG(error) << "Failed to get UTF-8 buffer size: "sv << winerr;
+      return {};
+    }
+
+    // Perform the conversion
+    std::string output(output_size, '\0');
+    output_size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, string.data(), string.size(),
+      output.data(), output.size(), nullptr, nullptr);
+    if (output_size == 0) {
+      auto winerr = GetLastError();
+      BOOST_LOG(error) << "Failed to convert string to UTF-8: "sv << winerr;
+      return {};
+    }
+
+    return output;
   }
 }  // namespace platf

@@ -18,9 +18,9 @@ extern "C" {
 }
 
 #include "config.h"
+#include "globals.h"
 #include "input.h"
 #include "logging.h"
-#include "main.h"
 #include "network.h"
 #include "stat_trackers.h"
 #include "stream.h"
@@ -1814,8 +1814,8 @@ namespace stream {
       // The alternative is that Sunshine can never start another session until it's manually restarted.
       auto task = []() {
         BOOST_LOG(fatal) << "Hang detected! Session failed to terminate in 10 seconds."sv;
-        log_flush();
-        std::abort();
+        logging::log_flush();
+        lifetime::debug_trap();
       };
       auto force_kill = task_pool.pushDelayed(task, 10s).task_id;
       auto fg = util::fail_guard([&force_kill]() {

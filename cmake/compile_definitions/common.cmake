@@ -3,7 +3,25 @@
 
 list(APPEND SUNSHINE_COMPILE_OPTIONS -Wall -Wno-sign-compare)
 # Wall - enable all warnings
+# Werror - treat warnings as errors
+# Wno-maybe-uninitialized/Wno-uninitialized - disable warnings for maybe uninitialized variables
 # Wno-sign-compare - disable warnings for signed/unsigned comparisons
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    # GCC specific compile options
+
+    # GCC 12 and higher will complain about maybe-uninitialized
+    if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 12)
+        list(APPEND SUNSHINE_COMPILE_OPTIONS -Wno-maybe-uninitialized)
+    endif()
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    # Clang specific compile options
+
+    # Clang doesn't actually complain about this this, so disabling for now
+    # list(APPEND SUNSHINE_COMPILE_OPTIONS -Wno-uninitialized)
+endif()
+if(BUILD_WERROR)
+    list(APPEND SUNSHINE_COMPILE_OPTIONS -Werror)
+endif()
 
 # setup assets directory
 if(NOT SUNSHINE_ASSETS_DIR)
@@ -28,7 +46,7 @@ file(GLOB NVENC_SOURCES CONFIGURE_DEPENDS "src/nvenc/*.cpp" "src/nvenc/*.h")
 list(APPEND PLATFORM_TARGET_FILES ${NVENC_SOURCES})
 
 configure_file("${CMAKE_SOURCE_DIR}/src/version.h.in" version.h @ONLY)
-include_directories("${CMAKE_CURRENT_BINARY_DIR}")
+include_directories("${CMAKE_CURRENT_BINARY_DIR}")  # required for importing version.h
 
 set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/third-party/nanors/rs.c"
@@ -45,8 +63,12 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/uuid.h"
         "${CMAKE_SOURCE_DIR}/src/config.h"
         "${CMAKE_SOURCE_DIR}/src/config.cpp"
+        "${CMAKE_SOURCE_DIR}/src/entry_handler.cpp"
+        "${CMAKE_SOURCE_DIR}/src/entry_handler.h"
         "${CMAKE_SOURCE_DIR}/src/file_handler.cpp"
         "${CMAKE_SOURCE_DIR}/src/file_handler.h"
+        "${CMAKE_SOURCE_DIR}/src/globals.cpp"
+        "${CMAKE_SOURCE_DIR}/src/globals.h"
         "${CMAKE_SOURCE_DIR}/src/logging.cpp"
         "${CMAKE_SOURCE_DIR}/src/logging.h"
         "${CMAKE_SOURCE_DIR}/src/main.cpp"
@@ -88,11 +110,6 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/stat_trackers.cpp"
         ${PLATFORM_TARGET_FILES})
 
-set_source_files_properties("${CMAKE_SOURCE_DIR}/src/upnp.cpp" PROPERTIES COMPILE_FLAGS -Wno-pedantic)
-
-set_source_files_properties("${CMAKE_SOURCE_DIR}/third-party/nanors/rs.c"
-        PROPERTIES COMPILE_FLAGS "-include deps/obl/autoshim.h -ftree-vectorize")
-
 if(NOT SUNSHINE_ASSETS_DIR_DEF)
     set(SUNSHINE_ASSETS_DIR_DEF "${SUNSHINE_ASSETS_DIR}")
 endif()
@@ -112,15 +129,6 @@ include_directories(
         ${PLATFORM_INCLUDE_DIRS}
 )
 
-string(TOUPPER "x${CMAKE_BUILD_TYPE}" BUILD_TYPE)
-if("${BUILD_TYPE}" STREQUAL "XDEBUG")
-    if(WIN32)
-        set_source_files_properties("${CMAKE_SOURCE_DIR}/src/nvhttp.cpp" PROPERTIES COMPILE_FLAGS -O2)
-    endif()
-else()
-    add_definitions(-DNDEBUG)
-endif()
-
 list(APPEND SUNSHINE_EXTERNAL_LIBRARIES
         ${MINIUPNP_LIBRARIES}
         ${CMAKE_THREAD_LIBS_INIT}
@@ -130,5 +138,4 @@ list(APPEND SUNSHINE_EXTERNAL_LIBRARIES
         ${Boost_LIBRARIES}
         ${OPENSSL_LIBRARIES}
         ${CURL_LIBRARIES}
-        ${PLATFORM_LIBRARIES}
-        nlohmann_json::nlohmann_json)
+        ${PLATFORM_LIBRARIES})

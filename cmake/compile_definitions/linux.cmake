@@ -8,10 +8,6 @@ if(${SUNSHINE_BUILD_APPIMAGE})
     string(REPLACE "${CMAKE_INSTALL_PREFIX}" ".${CMAKE_INSTALL_PREFIX}" SUNSHINE_ASSETS_DIR_DEF ${SUNSHINE_ASSETS_DIR})
 endif()
 
-if(NOT DEFINED SUNSHINE_EXECUTABLE_PATH)
-    set(SUNSHINE_EXECUTABLE_PATH "sunshine")
-endif()
-
 # cuda
 set(CUDA_FOUND OFF)
 if(${SUNSHINE_ENABLE_CUDA})
@@ -120,6 +116,17 @@ elseif(NOT LIBDRM_FOUND)
     message(WARNING "Missing libcap")
 endif()
 
+# evdev
+pkg_check_modules(PC_EVDEV libevdev REQUIRED)
+find_path(EVDEV_INCLUDE_DIR libevdev/libevdev.h
+        HINTS ${PC_EVDEV_INCLUDE_DIRS} ${PC_EVDEV_INCLUDEDIR})
+find_library(EVDEV_LIBRARY
+        NAMES evdev libevdev)
+if(EVDEV_INCLUDE_DIR AND EVDEV_LIBRARY)
+    include_directories(SYSTEM ${EVDEV_INCLUDE_DIR})
+    list(APPEND PLATFORM_LIBRARIES ${EVDEV_LIBRARY})
+endif()
+
 # vaapi
 if(${SUNSHINE_ENABLE_VAAPI})
     find_package(Libva)
@@ -192,13 +199,13 @@ endif()
 
 # tray icon
 if(${SUNSHINE_ENABLE_TRAY})
-    pkg_check_modules(APPINDICATOR appindicator3-0.1)
+    pkg_check_modules(APPINDICATOR ayatana-appindicator3-0.1)
     if(APPINDICATOR_FOUND)
-        list(APPEND SUNSHINE_DEFINITIONS TRAY_LEGACY_APPINDICATOR=1)
+        list(APPEND SUNSHINE_DEFINITIONS TRAY_AYATANA_APPINDICATOR=1)
     else()
-        pkg_check_modules(APPINDICATOR ayatana-appindicator3-0.1)
+        pkg_check_modules(APPINDICATOR appindicator3-0.1)
         if(APPINDICATOR_FOUND)
-            list(APPEND SUNSHINE_DEFINITIONS TRAY_AYATANA_APPINDICATOR=1)
+            list(APPEND SUNSHINE_DEFINITIONS TRAY_LEGACY_APPINDICATOR=1)
         endif ()
     endif()
     pkg_check_modules(LIBNOTIFY libnotify)
@@ -241,13 +248,11 @@ list(APPEND PLATFORM_TARGET_FILES
 list(APPEND PLATFORM_LIBRARIES
         Boost::dynamic_linking
         dl
-        evdev
         numa
         pulse
         pulse-simple)
 
 include_directories(
         SYSTEM
-        /usr/include/libevdev-1.0
         "${CMAKE_SOURCE_DIR}/third-party/nv-codec-headers/include"
         "${CMAKE_SOURCE_DIR}/third-party/glad/include")

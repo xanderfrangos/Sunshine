@@ -23,9 +23,9 @@
 #include "config.h"
 #include "crypto.h"
 #include "file_handler.h"
+#include "globals.h"
 #include "httpcommon.h"
 #include "logging.h"
-#include "main.h"
 #include "network.h"
 #include "nvhttp.h"
 #include "platform/common.h"
@@ -41,6 +41,8 @@ namespace nvhttp {
 
   namespace fs = std::filesystem;
   namespace pt = boost::property_tree;
+
+  crypto::cert_chain_t cert_chain;
 
   class SunshineHttpsServer: public SimpleWeb::Server<SimpleWeb::HTTPS> {
   public:
@@ -1061,7 +1063,6 @@ namespace nvhttp {
     conf_intern.pkey = file_handler::read_file(config::nvhttp.pkey.c_str());
     conf_intern.servercert = file_handler::read_file(config::nvhttp.cert.c_str());
 
-    crypto::cert_chain_t cert_chain;
     client_t &client = client_root;
     for (auto &cert : client.certs) {
       cert_chain.add(crypto::x509(cert));
@@ -1072,15 +1073,15 @@ namespace nvhttp {
 
     auto add_cert = std::make_shared<safe::queue_t<crypto::x509_t>>(30);
 
-    // /resume doesn't always get the parameter "localAudioPlayMode"
-    // /launch will store it in host_audio
+    // resume doesn't always get the parameter "localAudioPlayMode"
+    // launch will store it in host_audio
     bool host_audio {};
 
     https_server_t https_server { config::nvhttp.cert, config::nvhttp.pkey };
     http_server_t http_server;
 
     // Verify certificates after establishing connection
-    https_server.verify = [&cert_chain, add_cert](SSL *ssl) {
+    https_server.verify = [add_cert](SSL *ssl) {
       crypto::x509_t x509 { SSL_get_peer_certificate(ssl) };
       if (!x509) {
         BOOST_LOG(info) << "unknown -- denied"sv;
@@ -1195,6 +1196,7 @@ namespace nvhttp {
   erase_all_clients() {
     client_t client;
     client_root = client;
+    cert_chain.clear();
     save_state();
   }
 
