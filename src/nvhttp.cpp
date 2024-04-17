@@ -274,6 +274,17 @@ namespace nvhttp {
         client.certs.emplace_back(named_cert.cert);
       }
     }
+    
+
+    // Empty certificate chain and import certs from file
+    cert_chain.clear();
+    for (auto &cert : client.certs) {
+      cert_chain.add(crypto::x509(cert));
+    }
+    for (auto &named_cert : client.named_devices) {
+      cert_chain.add(crypto::x509(named_cert.cert));
+    }
+
     client_root = client;
   }
 
@@ -1063,14 +1074,6 @@ namespace nvhttp {
     conf_intern.pkey = file_handler::read_file(config::nvhttp.pkey.c_str());
     conf_intern.servercert = file_handler::read_file(config::nvhttp.cert.c_str());
 
-    client_t &client = client_root;
-    for (auto &cert : client.certs) {
-      cert_chain.add(crypto::x509(cert));
-    }
-    for (auto &named_cert : client.named_devices) {
-      cert_chain.add(crypto::x509(named_cert.cert));
-    }
-
     auto add_cert = std::make_shared<safe::queue_t<crypto::x509_t>>(30);
 
     // resume doesn't always get the parameter "localAudioPlayMode"
@@ -1235,6 +1238,7 @@ namespace nvhttp {
     }
 
     save_state();
+    load_state();
     return removed;
   }
 }  // namespace nvhttp
