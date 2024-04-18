@@ -88,10 +88,13 @@
           <br />
           <p class="mb-0">{{ $t('troubleshooting.unpair_all_desc') }}</p>
           <div id="apply-alert" class="alert alert-success d-flex align-items-center mt-3" :style="{ 'display': (showApplyMessage ? 'flex !important': 'none !important') }">
-            <div class="me-2"><b>{{ $t('_common.success') }}</b> {{ $t('troubleshooting.unpair_all_success') }}</div>
+            <div class="me-2"><b>{{ $t('_common.success') }}</b> {{ $t('troubleshooting.unpair_single_success') }}</div>
             <button class="btn btn-success ms-auto apply" @click="clickedApplyBanner">{{ $t('_common.dismiss') }}</button>
           </div>
-          <div class="alert alert-danger" v-if="unpairAllStatus === false">
+          <div class="alert alert-danger mt-3" v-if="unpairAllStatus === true">
+            {{ $t('troubleshooting.unpair_all_success') }}
+          </div>
+          <div class="alert alert-danger mt-3" v-if="unpairAllStatus === false">
             {{ $t('troubleshooting.unpair_all_error') }}
           </div>
         </div>
@@ -190,7 +193,6 @@
           fetch("/api/clients/unpair-all", { method: "POST" })
             .then((r) => r.json())
             .then((r) => {
-              this.showApplyMessage = true;
               this.unpairAllPressed = false;
               this.unpairAllStatus = r.status.toString() === "true";
               setTimeout(() => {
