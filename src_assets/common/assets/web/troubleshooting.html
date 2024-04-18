@@ -211,7 +211,9 @@
             .then((response) => {
               const clientList = document.querySelector("#client-list");
               if (response.status === 'true' && response.named_certs && response.named_certs.length) {
-                this.clients = response.named_certs;
+                this.clients = response.named_certs.sort((a, b) => {
+                  return (a.name.toLowerCase() > b.name.toLowerCase() || a.name == "" ? 1 : -1)
+                });
               } else {
                 this.clients = [];
               }
