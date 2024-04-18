@@ -138,16 +138,16 @@
       },
       data() {
         return {
+          clients: [],
           closeAppPressed: false,
           closeAppStatus: null,
+          logs: 'Loading...',
+          logFilter: null,
+          logInterval: null,
           unpairAllPressed: false,
           unpairAllStatus: null,
           restartPressed: false,
           showApplyMessage: false,
-          clients: [],
-          logs: 'Loading...',
-          logFilter: null,
-          logInterval: null,
         };
       },
       computed: {
