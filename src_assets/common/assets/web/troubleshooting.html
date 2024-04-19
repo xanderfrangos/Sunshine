@@ -91,7 +91,7 @@
             <div class="me-2"><b>{{ $t('_common.success') }}</b> {{ $t('troubleshooting.unpair_single_success') }}</div>
             <button class="btn btn-success ms-auto apply" @click="clickedApplyBanner">{{ $t('_common.dismiss') }}</button>
           </div>
-          <div class="alert alert-danger mt-3" v-if="unpairAllStatus === true">
+          <div class="alert alert-success mt-3" v-if="unpairAllStatus === true">
             {{ $t('troubleshooting.unpair_all_success') }}
           </div>
           <div class="alert alert-danger mt-3" v-if="unpairAllStatus === false">
