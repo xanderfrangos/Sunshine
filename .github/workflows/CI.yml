@@ -211,6 +211,7 @@ jobs:
           then
             echo "This is a PUSH event"
             branch=${{ github.ref_name }}
+            build_version=${{ needs.check_changelog.outputs.next_version }}
             commit=${{ github.sha }}
             clone_url=${{ github.event.repository.clone_url }}
           else
@@ -227,6 +228,7 @@ jobs:
 
           cd build
           cmake -DGITHUB_CLONE_URL=${clone_url} \
+            -DBUILD_VERSION=${build_version} \
             -DGITHUB_BRANCH=${branch} \
             -DGITHUB_COMMIT=${commit} \
             -DSUNSHINE_CONFIGURE_FLATPAK_MAN=ON \
@@ -278,7 +280,7 @@ jobs:
         include:  # package these differently
           - type: AppImage
             EXTRA_ARGS: '-DSUNSHINE_BUILD_APPIMAGE=ON'
-            dist: 20.04
+            dist: 22.04
 
     steps:
       - name: Maximize build space
@@ -321,6 +323,9 @@ jobs:
           # allow newer gcc
           sudo add-apt-repository ppa:ubuntu-toolchain-r/test -y
 
+          # allow libfuse2 for appimage on 22.04
+          sudo add-apt-repository universe
+
           sudo apt-get install -y \
             build-essential \
             cmake \
@@ -336,6 +341,7 @@ jobs:
             libcurl4-openssl-dev \
             libdrm-dev \
             libevdev-dev \
+            libfuse2 \
             libminiupnpc-dev \
             libmfx-dev \
             libnotify-dev \
@@ -377,7 +383,7 @@ jobs:
       - name: Build Linux
         env:
           BRANCH: ${{ github.head_ref || github.ref_name }}
-          BUILD_VERSION: ${{ needs.check_changelog.outputs.next_version_bare }}
+          BUILD_VERSION: ${{ needs.check_changelog.outputs.next_version }}
           COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         timeout-minutes: 5
         run: |
@@ -507,9 +513,13 @@ jobs:
 
       - name: Upload coverage
         # any except canceled or skipped
-        if: always() && (steps.test_report.outcome == 'success')
+        if: >-
+          always() &&
+          (steps.test_report.outcome == 'success') &&
+          startsWith(github.repository, 'LizardByte/')
         uses: codecov/codecov-action@v4
         with:
+          disable_search: true
           fail_ci_if_error: true
           files: ./build/coverage.xml
           flags: ${{ runner.os }}
@@ -562,13 +572,16 @@ jobs:
           if [ -z "$branch" ]
           then
             echo "This is a PUSH event"
+            build_version=${{ needs.check_changelog.outputs.next_version }}
             clone_url=${{ github.event.repository.clone_url }}
             branch="${{ github.ref_name }}"
+            commit=${{ github.sha }}
             default_branch="${{ github.event.repository.default_branch }}"
           else
             echo "This is a PR event"
             clone_url=${{ github.event.pull_request.head.repo.clone_url }}
             branch="${{ github.event.pull_request.head.ref }}"
+            commit=${{ github.event.pull_request.head.sha }}
             default_branch="${{ github.event.pull_request.head.repo.default_branch }}"
           fi
           echo "Branch: ${branch}"
@@ -577,7 +590,9 @@ jobs:
           mkdir build
           cd build
           cmake \
+            -DBUILD_VERSION="${build_version}" \
             -DGITHUB_BRANCH="${branch}" \
+            -DGITHUB_COMMIT="${commit}" \
             -DGITHUB_CLONE_URL="${clone_url}" \
             -DGITHUB_DEFAULT_BRANCH="${default_branch}" \
             -DSUNSHINE_CONFIGURE_HOMEBREW=ON \
@@ -615,7 +630,7 @@ jobs:
           echo "publish=${PUBLISH}" >> $GITHUB_OUTPUT
 
       - name: Validate and Publish Homebrew Formula
-        uses: LizardByte/homebrew-release-action@v2024.409.24405
+        uses: LizardByte/homebrew-release-action@v2024.417.220943
         with:
           formula_file: ${{ github.workspace }}/homebrew/sunshine.rb
           git_email: ${{ secrets.GH_BOT_EMAIL }}
@@ -675,6 +690,8 @@ jobs:
           if [ -z "$branch" ]
           then
             echo "This is a PUSH event"
+            branch="${{ github.ref_name }}"
+            build_version=${{ needs.check_changelog.outputs.next_version }}
             commit=${{ github.sha }}
             clone_url=${{ github.event.repository.clone_url }}
           else
@@ -688,6 +705,8 @@ jobs:
           mkdir build
           cd build
           cmake \
+            -DBUILD_VERSION=${build_version} \
+            -DGITHUB_BRANCH=${branch} \
             -DGITHUB_COMMIT=${commit} \
             -DGITHUB_CLONE_URL=${clone_url} \
             -DSUNSHINE_CONFIGURE_PORTFILE=ON \
@@ -832,9 +851,13 @@ jobs:
 
       - name: Upload coverage
         # any except canceled or skipped
-        if: always() && (steps.test_report.outcome == 'success')
+        if: >-
+          always() &&
+          (steps.test_report.outcome == 'success') &&
+          startsWith(github.repository, 'LizardByte/')
         uses: codecov/codecov-action@v4
         with:
+          disable_search: true
           fail_ci_if_error: false  # todo: re-enable this when action is fixed
           files: ./build/coverage.xml
           flags: ${{ runner.os }}-${{ matrix.os_version }}
@@ -1018,7 +1041,7 @@ jobs:
         shell: msys2 {0}
         env:
           BRANCH: ${{ github.head_ref || github.ref_name }}
-          BUILD_VERSION: ${{ needs.check_changelog.outputs.next_version_bare }}
+          BUILD_VERSION: ${{ needs.check_changelog.outputs.next_version }}
           COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           mkdir build
@@ -1070,9 +1093,13 @@ jobs:
 
       - name: Upload coverage
         # any except canceled or skipped
-        if: always() && (steps.test_report.outcome == 'success')
+        if: >-
+          always() &&
+          (steps.test_report.outcome == 'success') &&
+          startsWith(github.repository, 'LizardByte/')
         uses: codecov/codecov-action@v4
         with:
+          disable_search: true
           fail_ci_if_error: true
           files: ./build/coverage.xml
           flags: ${{ runner.os }}
