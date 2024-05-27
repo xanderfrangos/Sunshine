@@ -3,34 +3,36 @@
  * @brief todo
  */
 #import <Carbon/Carbon.h>
+#include <chrono>
 #include <mach/mach.h>
-#include <mach/mach_time.h>
 
-#include "src/main.h"
+#include "src/logging.h"
 #include "src/platform/common.h"
 #include "src/utility.h"
 
-// Delay for a double click
-// FIXME: we probably want to make this configurable
-#define MULTICLICK_DELAY_NS 500000000
+/**
+ * @brief Delay for a double click, in milliseconds.
+ * @todo Make this configurable.
+ */
+constexpr std::chrono::milliseconds MULTICLICK_DELAY_MS(500);
 
 namespace platf {
   using namespace std::literals;
 
   struct macos_input_t {
   public:
-    CGDirectDisplayID display;
-    CGFloat displayScaling;
-    CGEventSourceRef source;
+    CGDirectDisplayID display {};
+    CGFloat displayScaling {};
+    CGEventSourceRef source {};
 
     // keyboard related stuff
-    CGEventRef kb_event;
-    CGEventFlags kb_flags;
+    CGEventRef kb_event {};
+    CGEventFlags kb_flags {};
 
     // mouse related stuff
-    CGEventRef mouse_event;  // mouse event source
-    bool mouse_down[3];  // mouse button status
-    uint64_t last_mouse_event[3][2];  // timestamp of last mouse events
+    CGEventRef mouse_event {};  // mouse event source
+    bool mouse_down[3] {};  // mouse button status
+    std::chrono::steady_clock::steady_clock::time_point last_mouse_event[3][2];  // timestamp of last mouse events
   };
 
   // A struct to hold a Windows keycode to Mac virtual keycode mapping.
@@ -219,7 +221,7 @@ const KeyCodeMap kKeyCodesMap[] = {
 
   int
   keysym(int keycode) {
-    KeyCodeMap key_map;
+    KeyCodeMap key_map {};
 
     key_map.win_keycode = keycode;
     const KeyCodeMap *temp_map = std::lower_bound(
@@ -326,15 +328,12 @@ const KeyCodeMap kKeyCodesMap[] = {
     auto display = macos_input->display;
     auto event = macos_input->mouse_event;
 
-    if (location.x < 0)
-      location.x = 0;
-    if (location.x >= CGDisplayPixelsWide(display))
-      location.x = CGDisplayPixelsWide(display) - 1;
+    // get display bounds for current display
+    CGRect display_bounds = CGDisplayBounds(display);
 
-    if (location.y < 0)
-      location.y = 0;
-    if (location.y >= CGDisplayPixelsHigh(display))
-      location.y = CGDisplayPixelsHigh(display) - 1;
+    // limit mouse to current display bounds
+    location.x = std::clamp(location.x, display_bounds.origin.x, display_bounds.origin.x + display_bounds.size.width - 1);
+    location.y = std::clamp(location.y, display_bounds.origin.y, display_bounds.origin.y + display_bounds.size.height - 1);
 
     CGEventSetType(event, type);
     CGEventSetLocation(event, location);
@@ -377,22 +376,16 @@ const KeyCodeMap kKeyCodesMap[] = {
 
   void
   abs_mouse(input_t &input, const touch_port_t &touch_port, float x, float y) {
-    auto scaling = ((macos_input_t *) input.get())->displayScaling;
+    auto macos_input = static_cast<macos_input_t *>(input.get());
+    auto scaling = macos_input->displayScaling;
+    auto display = macos_input->display;
 
     CGPoint location = CGPointMake(x * scaling, y * scaling);
-
+    CGRect display_bounds = CGDisplayBounds(display);
+    // in order to get the correct mouse location for capturing display , we need to add the display bounds to the location
+    location.x += display_bounds.origin.x;
+    location.y += display_bounds.origin.y;
     post_mouse(input, kCGMouseButtonLeft, event_type_mouse(input), location, 0);
-  }
-
-  uint64_t
-  time_diff(uint64_t start) {
-    uint64_t elapsed;
-    Nanoseconds elapsedNano;
-
-    elapsed = mach_absolute_time() - start;
-    elapsedNano = AbsoluteToNanoseconds(*(AbsoluteTime *) &elapsed);
-
-    return *(uint64_t *) &elapsedNano;
   }
 
   void
@@ -422,21 +415,22 @@ const KeyCodeMap kKeyCodesMap[] = {
 
     mouse->mouse_down[mac_button] = !release;
 
-    // if the last mouse down was less than MULTICLICK_DELAY_NS, we send a double click event
-    if (time_diff(mouse->last_mouse_event[mac_button][release]) < MULTICLICK_DELAY_NS) {
+    // if the last mouse down was less than MULTICLICK_DELAY_MS, we send a double click event
+    auto now = std::chrono::steady_clock::now();
+    if (now < mouse->last_mouse_event[mac_button][release] + MULTICLICK_DELAY_MS) {
       post_mouse(input, mac_button, event, get_mouse_loc(input), 2);
     }
     else {
       post_mouse(input, mac_button, event, get_mouse_loc(input), 1);
     }
 
-    mouse->last_mouse_event[mac_button][release] = mach_absolute_time();
+    mouse->last_mouse_event[mac_button][release] = now;
   }
 
   void
   scroll(input_t &input, int high_res_distance) {
     CGEventRef upEvent = CGEventCreateScrollWheelEvent(
-      NULL,
+      nullptr,
       kCGScrollEventUnitLine,
       2, high_res_distance > 0 ? 1 : -1, high_res_distance);
     CGEventPost(kCGHIDEventTap, upEvent);
@@ -517,8 +511,27 @@ const KeyCodeMap kKeyCodesMap[] = {
 
     auto macos_input = (macos_input_t *) result.get();
 
-    // If we don't use the main display in the future, this has to be adapted
+    // Default to main display
     macos_input->display = CGMainDisplayID();
+
+    auto output_name = config::video.output_name;
+    // If output_name is set, try to find the display with that display id
+    if (!output_name.empty()) {
+      uint32_t max_display = 32;
+      uint32_t display_count;
+      CGDirectDisplayID displays[max_display];
+      if (CGGetActiveDisplayList(max_display, displays, &display_count) != kCGErrorSuccess) {
+        BOOST_LOG(error) << "Unable to get active display list , error: "sv << std::endl;
+      }
+      else {
+        for (int i = 0; i < display_count; i++) {
+          CGDirectDisplayID display_id = displays[i];
+          if (display_id == std::atoi(output_name.c_str())) {
+            macos_input->display = display_id;
+          }
+        }
+      }
+    }
 
     // Input coordinates are based on the virtual resolution not the physical, so we need the scaling factor
     CGDisplayModeRef mode = CGDisplayCopyDisplayMode(macos_input->display);
@@ -534,12 +547,6 @@ const KeyCodeMap kKeyCodesMap[] = {
     macos_input->mouse_down[0] = false;
     macos_input->mouse_down[1] = false;
     macos_input->mouse_down[2] = false;
-    macos_input->last_mouse_event[0][0] = 0;
-    macos_input->last_mouse_event[0][1] = 0;
-    macos_input->last_mouse_event[1][0] = 0;
-    macos_input->last_mouse_event[1][1] = 0;
-    macos_input->last_mouse_event[2][0] = 0;
-    macos_input->last_mouse_event[2][1] = 0;
 
     BOOST_LOG(debug) << "Display "sv << macos_input->display << ", pixel dimension: " << CGDisplayPixelsWide(macos_input->display) << "x"sv << CGDisplayPixelsHigh(macos_input->display);
 

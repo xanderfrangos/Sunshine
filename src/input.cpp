@@ -17,13 +17,19 @@ extern "C" {
 #include <unordered_map>
 
 #include "config.h"
+#include "globals.h"
 #include "input.h"
-#include "main.h"
+#include "logging.h"
 #include "platform/common.h"
 #include "thread_pool.h"
 #include "utility.h"
 
 #include <boost/endian/buffers.hpp>
+
+// Win32 WHEEL_DELTA constant
+#ifndef WHEEL_DELTA
+  #define WHEEL_DELTA 120
+#endif
 
 using namespace std::literals;
 namespace input {
@@ -160,7 +166,9 @@ namespace input {
         touch_port_event { std::move(touch_port_event) },
         feedback_queue { std::move(feedback_queue) },
         mouse_left_button_timeout {},
-        touch_port { { 0, 0, 0, 0 }, 0, 0, 1.0f } {}
+        touch_port { { 0, 0, 0, 0 }, 0, 0, 1.0f },
+        accumulated_vscroll_delta {},
+        accumulated_hscroll_delta {} {}
 
     // Keep track of alt+ctrl+shift key combo
     int shortcutFlags;
@@ -177,6 +185,9 @@ namespace input {
     thread_pool_util::ThreadPool::task_id_t mouse_left_button_timeout;
 
     input::touch_port_t touch_port;
+
+    int32_t accumulated_vscroll_delta;
+    int32_t accumulated_hscroll_delta;
   };
 
   /**
@@ -458,14 +469,18 @@ namespace input {
    * @param input The input context.
    * @param val The cartesian coordinate pair to convert.
    * @param size The size of the client's surface containing the value.
-   * @return The host-relative coordinate pair.
+   * @return The host-relative coordinate pair if a touchport is available.
    */
-  std::pair<float, float>
+  std::optional<std::pair<float, float>>
   client_to_touchport(std::shared_ptr<input_t> &input, const std::pair<float, float> &val, const std::pair<float, float> &size) {
     auto &touch_port_event = input->touch_port_event;
     auto &touch_port = input->touch_port;
     if (touch_port_event->peek()) {
       touch_port = *touch_port_event->pop();
+    }
+    if (!touch_port) {
+      BOOST_LOG(verbose) << "Ignoring early absolute input without a touch port"sv;
+      return std::nullopt;
     }
 
     auto scalarX = touch_port.width / size.first;
@@ -480,7 +495,7 @@ namespace input {
     x = std::clamp(x, offsetX, (size.first * scalarX) - offsetX);
     y = std::clamp(y, offsetY, (size.second * scalarY) - offsetY);
 
-    return { (x - offsetX) * touch_port.scalar_inv, (y - offsetY) * touch_port.scalar_inv };
+    return std::pair { (x - offsetX) * touch_port.scalar_inv, (y - offsetY) * touch_port.scalar_inv };
   }
 
   /**
@@ -550,6 +565,9 @@ namespace input {
     auto height = (float) util::endian::big(packet->height);
 
     auto tpcoords = client_to_touchport(input, { x, y }, { width, height });
+    if (!tpcoords) {
+      return;
+    }
 
     auto &touch_port = input->touch_port;
     platf::touch_port_t abs_port {
@@ -557,7 +575,7 @@ namespace input {
       touch_port.env_width, touch_port.env_height
     };
 
-    platf::abs_mouse(platf_input, abs_port, tpcoords.first, tpcoords.second);
+    platf::abs_mouse(platf_input, abs_port, tpcoords->first, tpcoords->second);
   }
 
   void
@@ -790,22 +808,54 @@ namespace input {
     update_shortcutFlags(&input->shortcutFlags, map_keycode(keyCode), release);
   }
 
+  /**
+   * @brief Called to pass a vertical scroll message the platform backend.
+   * @param input The input context pointer.
+   * @param packet The scroll packet.
+   */
   void
-  passthrough(PNV_SCROLL_PACKET packet) {
+  passthrough(std::shared_ptr<input_t> &input, PNV_SCROLL_PACKET packet) {
     if (!config::input.mouse) {
       return;
     }
 
-    platf::scroll(platf_input, util::endian::big(packet->scrollAmt1));
+    if (config::input.high_resolution_scrolling) {
+      platf::scroll(platf_input, util::endian::big(packet->scrollAmt1));
+    }
+    else {
+      input->accumulated_vscroll_delta += util::endian::big(packet->scrollAmt1);
+      auto full_ticks = input->accumulated_vscroll_delta / WHEEL_DELTA;
+      if (full_ticks) {
+        // Send any full ticks that have accumulated and store the rest
+        platf::scroll(platf_input, full_ticks * WHEEL_DELTA);
+        input->accumulated_vscroll_delta -= full_ticks * WHEEL_DELTA;
+      }
+    }
   }
 
+  /**
+   * @brief Called to pass a horizontal scroll message the platform backend.
+   * @param input The input context pointer.
+   * @param packet The scroll packet.
+   */
   void
-  passthrough(PSS_HSCROLL_PACKET packet) {
+  passthrough(std::shared_ptr<input_t> &input, PSS_HSCROLL_PACKET packet) {
     if (!config::input.mouse) {
       return;
     }
 
-    platf::hscroll(platf_input, util::endian::big(packet->scrollAmount));
+    if (config::input.high_resolution_scrolling) {
+      platf::hscroll(platf_input, util::endian::big(packet->scrollAmount));
+    }
+    else {
+      input->accumulated_hscroll_delta += util::endian::big(packet->scrollAmount);
+      auto full_ticks = input->accumulated_hscroll_delta / WHEEL_DELTA;
+      if (full_ticks) {
+        // Send any full ticks that have accumulated and store the rest
+        platf::hscroll(platf_input, full_ticks * WHEEL_DELTA);
+        input->accumulated_hscroll_delta -= full_ticks * WHEEL_DELTA;
+      }
+    }
   }
 
   void
@@ -875,6 +925,9 @@ namespace input {
       { from_clamped_netfloat(packet->x, 0.0f, 1.0f) * 65535.f,
         from_clamped_netfloat(packet->y, 0.0f, 1.0f) * 65535.f },
       { 65535.f, 65535.f });
+    if (!coords) {
+      return;
+    }
 
     auto &touch_port = input->touch_port;
     platf::touch_port_t abs_port {
@@ -883,8 +936,8 @@ namespace input {
     };
 
     // Renormalize the coordinates
-    coords.first /= abs_port.width;
-    coords.second /= abs_port.height;
+    coords->first /= abs_port.width;
+    coords->second /= abs_port.height;
 
     // Normalize rotation value to 0-359 degree range
     auto rotation = util::endian::little(packet->rotation);
@@ -903,8 +956,8 @@ namespace input {
       packet->eventType,
       rotation,
       util::endian::little(packet->pointerId),
-      coords.first,
-      coords.second,
+      coords->first,
+      coords->second,
       from_clamped_netfloat(packet->pressureOrDistance, 0.0f, 1.0f),
       contact_area.first,
       contact_area.second,
@@ -929,6 +982,9 @@ namespace input {
       { from_clamped_netfloat(packet->x, 0.0f, 1.0f) * 65535.f,
         from_clamped_netfloat(packet->y, 0.0f, 1.0f) * 65535.f },
       { 65535.f, 65535.f });
+    if (!coords) {
+      return;
+    }
 
     auto &touch_port = input->touch_port;
     platf::touch_port_t abs_port {
@@ -937,8 +993,8 @@ namespace input {
     };
 
     // Renormalize the coordinates
-    coords.first /= abs_port.width;
-    coords.second /= abs_port.height;
+    coords->first /= abs_port.width;
+    coords->second /= abs_port.height;
 
     // Normalize rotation value to 0-359 degree range
     auto rotation = util::endian::little(packet->rotation);
@@ -959,8 +1015,8 @@ namespace input {
       packet->penButtons,
       packet->tilt,
       rotation,
-      coords.first,
-      coords.second,
+      coords->first,
+      coords->second,
       from_clamped_netfloat(packet->pressureOrDistance, 0.0f, 1.0f),
       contact_area.first,
       contact_area.second,
@@ -1540,10 +1596,10 @@ namespace input {
         passthrough(input, (PNV_MOUSE_BUTTON_PACKET) payload);
         break;
       case SCROLL_MAGIC_GEN5:
-        passthrough((PNV_SCROLL_PACKET) payload);
+        passthrough(input, (PNV_SCROLL_PACKET) payload);
         break;
       case SS_HSCROLL_MAGIC:
-        passthrough((PSS_HSCROLL_PACKET) payload);
+        passthrough(input, (PSS_HSCROLL_PACKET) payload);
         break;
       case KEY_DOWN_EVENT_MAGIC:
       case KEY_UP_EVENT_MAGIC:

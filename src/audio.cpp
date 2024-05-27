@@ -10,7 +10,8 @@
 
 #include "audio.h"
 #include "config.h"
-#include "main.h"
+#include "globals.h"
+#include "logging.h"
 #include "thread_safe.h"
 #include "utility.h"
 
@@ -39,6 +40,8 @@ namespace audio {
 
   constexpr auto SAMPLE_RATE = 48000;
 
+  // NOTE: If you adjust the bitrates listed here, make sure to update the
+  // corresponding bitrate adjustment logic in rtsp_stream::cmd_announce()
   opus_stream_config_t stream_configs[MAX_STREAM_CONFIG] {
     {
       SAMPLE_RATE,
@@ -111,6 +114,10 @@ namespace audio {
 
     opus_multistream_encoder_ctl(opus.get(), OPUS_SET_BITRATE(stream->bitrate));
     opus_multistream_encoder_ctl(opus.get(), OPUS_SET_VBR(0));
+
+    BOOST_LOG(info) << "Opus initialized: "sv << stream->sampleRate / 1000 << " kHz, "sv
+                    << stream->channelCount << " channels, "sv
+                    << stream->bitrate / 1000 << " kbps (total), LOWDELAY"sv;
 
     auto frame_size = config.packetDuration * stream->sampleRate / 1000;
     while (auto sample = samples->pop()) {

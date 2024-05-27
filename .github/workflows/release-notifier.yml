@@ -9,15 +9,15 @@ name: Release Notifications
 
 on:
   release:
-    types: [published]
-    # https://docs.github.com/en/actions/learn-github-actions/workflow-syntax-for-github-actions#onevent_nametypes
+    types:
+      - released  # this triggers when a release is published, but does not include prereleases or drafts
 
 jobs:
   discord:
     if: >-
-      (github.repository, 'LizardByte/') and
-      not(github.event.release.prerelease) and
-      not(github.event.release.draft)
+      startsWith(github.repository, 'LizardByte/') &&
+      !github.event.release.prerelease &&
+      !github.event.release.draft
     runs-on: ubuntu-latest
     steps:
       - name: discord
@@ -34,9 +34,9 @@ jobs:
 
   facebook_group:
     if: >-
-      (github.repository, 'LizardByte/') and
-      not(github.event.release.prerelease) and
-      not(github.event.release.draft)
+      startsWith(github.repository, 'LizardByte/') &&
+      !github.event.release.prerelease &&
+      !github.event.release.draft
     runs-on: ubuntu-latest
     steps:
       - name: facebook-post-action
@@ -51,9 +51,9 @@ jobs:
 
   facebook_page:
     if: >-
-      (github.repository, 'LizardByte/') and
-      not(github.event.release.prerelease) and
-      not(github.event.release.draft)
+      startsWith(github.repository, 'LizardByte/') &&
+      !github.event.release.prerelease &&
+      !github.event.release.draft
     runs-on: ubuntu-latest
     steps:
       - name: facebook-post-action
@@ -68,9 +68,9 @@ jobs:
 
   reddit:
     if: >-
-      (github.repository, 'LizardByte/') and
-      not(github.event.release.prerelease) and
-      not(github.event.release.draft)
+      startsWith(github.repository, 'LizardByte/') &&
+      !github.event.release.prerelease &&
+      !github.event.release.draft
     runs-on: ubuntu-latest
     steps:
       - name: reddit
@@ -88,9 +88,9 @@ jobs:
 
   twitter:
     if: >-
-      (github.repository, 'LizardByte/') and
-      not(github.event.release.prerelease) and
-      not(github.event.release.draft)
+      startsWith(github.repository, 'LizardByte/') &&
+      !github.event.release.prerelease &&
+      !github.event.release.draft
     runs-on: ubuntu-latest
     steps:
       - name: twitter

@@ -23,11 +23,22 @@
   for (uint32_t i = 0; i < count; i++) {
     [result addObject:@{
       @"id": [NSNumber numberWithUnsignedInt:displays[i]],
-      @"name": [NSString stringWithFormat:@"%d", displays[i]]
+      @"name": [NSString stringWithFormat:@"%d", displays[i]],
+      @"displayName": [self getDisplayName:displays[i]],
     }];
   }
 
   return [NSArray arrayWithArray:result];
+}
+
++ (NSString *)getDisplayName:(CGDirectDisplayID)displayID {
+  NSScreen *screens = [NSScreen screens];
+  for (NSScreen *screen in screens) {
+    if (screen.deviceDescription[@"NSScreenNumber"] == [NSNumber numberWithUnsignedInt:displayID]) {
+      return screen.localizedName;
+    }
+  }
+  return nil;
 }
 
 - (id)initWithDisplay:(CGDirectDisplayID)displayID frameRate:(int)frameRate {
@@ -37,8 +48,8 @@
 
   self.displayID = displayID;
   self.pixelFormat = kCVPixelFormatType_32BGRA;
-  self.frameWidth = CGDisplayModeGetPixelWidth(mode);
-  self.frameHeight = CGDisplayModeGetPixelHeight(mode);
+  self.frameWidth = (int) CGDisplayModeGetPixelWidth(mode);
+  self.frameHeight = (int) CGDisplayModeGetPixelHeight(mode);
   self.minFrameDuration = CMTimeMake(1, frameRate);
   self.session = [[AVCaptureSession alloc] init];
   self.videoOutputs = [[NSMapTable alloc] init];

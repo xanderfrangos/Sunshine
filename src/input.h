@@ -32,5 +32,13 @@ namespace input {
     float client_offsetX, client_offsetY;
 
     float scalar_inv;
+
+    explicit
+    operator bool() const {
+      return width != 0 && height != 0 && env_width != 0 && env_height != 0;
+    }
   };
+
+  std::pair<float, float>
+  scale_client_contact_area(const std::pair<float, float> &val, uint16_t rotation, const std::pair<float, float> &scalar);
 }  // namespace input

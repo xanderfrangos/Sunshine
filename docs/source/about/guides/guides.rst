@@ -7,4 +7,5 @@ Collection of guides written by the community!
    :maxdepth: 2
 
    app_examples
-   linux/linux
+   linux
+   windows
